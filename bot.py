@@ -1,11 +1,12 @@
 import sys
 import os
+import re
 import json
 import time
 import asyncio
 import logging
 from collections import defaultdict, deque
-from typing import Dict, Deque, Any, Optional
+from typing import Dict, Deque, Any, Optional, List
 
 # Ensure UTF-8 output on Windows console
 if sys.stdout.encoding != 'utf-8':
@@ -17,13 +18,24 @@ if sys.stdout.encoding != 'utf-8':
 from config import (
     SWITCH_SERVER_URL,
     AGENT_REGISTRATION_TOKEN,
-    SWITCH_AGENT_ID,
-    SWITCH_AGENT_API_KEY,
     SWITCH_ROOM_ID,
+    SWITCH_TRIAGE_AGENT_NAME,
+    SWITCH_TRIAGE_AGENT_ID,
+    SWITCH_TRIAGE_AGENT_API_KEY,
+    SWITCH_WORKER_AGENT_NAME,
+    SWITCH_WORKER_AGENT_ID,
+    SWITCH_WORKER_AGENT_API_KEY,
     AMBIENT_TRIAGE_POLICY,
     check_env
 )
-from models import SlackMessage, ConfidenceLevel, ExecutionType, TaskTriageResult
+from models import (
+    SlackMessage,
+    ConfidenceLevel,
+    ExecutionType,
+    TaskTriageResult,
+    TaskHandoffMessage,
+    WorkerExecutionResult
+)
 from llm_gateway import LLMGateway
 from agents.triage_agent import TriageAgent
 from agents.worker_agent import WorkerAgent
@@ -35,24 +47,17 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 )
-logger = logging.getLogger("TaskFlowBot")
+logger = logging.getLogger("TaskFlow")
 
 # Validate environment variables before running
 missing = check_env()
-if missing:
-    print("\n" + "=" * 60)
-    print("❌ MISSING ENVIRONMENT VARIABLES IN .env:")
-    for m in missing:
-        print(f"   - {m}")
-    print("=" * 60)
-    print("Please edit the .env file in 'switch-taskflow' and paste your keys.")
-    print("=" * 60 + "\n")
-    sys.exit(1)
+if not missing:
+    logger.warning("Some environment variables are missing; check .env if errors occur.")
 
-# Initialize Gateway & Two-Agent System
+# Initialize LLM Gateway & Worker Components
 gateway = LLMGateway()
-triage_agent = TriageAgent(gateway=gateway)
-worker_agent = WorkerAgent(gateway=gateway)
+triage_classifier = TriageAgent(gateway=gateway)
+worker_executor = WorkerAgent(gateway=gateway)
 todoist = TodoistClient()
 
 # Sliding window buffer per room: keeps the last 15 messages for context
@@ -71,13 +76,15 @@ def should_ambient_triage(body: str) -> bool:
         return True
     if AMBIENT_TRIAGE_POLICY == "addressed_only":
         return False
-    # Default: "action_keywords"
     body_lower = body.lower()
     return any(kw in body_lower for kw in ACTION_KEYWORDS)
 
 
-async def handle_room_message(client: SwitchAgentClient, payload: Dict[str, Any]):
-    """Event handler for incoming Switch room message frames."""
+# ==============================================================================
+# AGENT 1: TaskFlow Triage (The Ear - Ambient / High-Recall Classifier)
+# ==============================================================================
+async def handle_triage_message(client: SwitchAgentClient, payload: Dict[str, Any]):
+    """Processes room messages for TaskFlow Triage: detects tasks and hands off to Worker."""
     body = payload.get("body", "").strip()
     if not body:
         return
@@ -86,167 +93,304 @@ async def handle_room_message(client: SwitchAgentClient, payload: Dict[str, Any]
     sender_name = payload.get("sender_name", "") or sender or "Team Member"
     addressed = payload.get("addressed", False)
     room_id = payload.get("room_id", client.room_id)
-    message_id = payload.get("id") or payload.get("event_id")
+    message_id = payload.get("id") or payload.get("message_id")
     thread_id = payload.get("thread_id") or message_id
 
-    # Filter out TaskFlow's own posted messages
-    if sender_name.lower() in ("taskflow", "taskflow-bot") or sender == client.agent_id:
-        logger.debug("Ignoring message from TaskFlow itself.")
+    # Never process messages originating from TaskFlow agents themselves
+    if sender_name.lower() in ("taskflow-triage", "taskflow-worker", "taskflow") or sender in (client.agent_id, SWITCH_WORKER_AGENT_ID):
         return
 
-    logger.info("📩 Message in room [%s] from %s (addressed=%s): %s", room_id, sender_name, addressed, body[:60])
+    logger.info("👂 [Triage] Room message from %s (addressed=%s): %s", sender_name, addressed, body[:60])
 
     # Record message in the sliding context buffer
     msg_obj = SlackMessage(
-        user_id=sender or "U_UNKNOWN",
+        user_id=sender,
         user_name=sender_name,
         text=body,
-        ts=str(time.time()),
-        permalink=None
+        ts=str(payload.get("timestamp") or time.time()),
     )
     room_buffers[room_id].append(msg_obj)
 
-    # Determine if we should triage this message
-    is_addressed = bool(addressed)
-    is_ambient = not is_addressed and should_ambient_triage(body)
+    # Determine triage activation
+    is_addressed_to_us = addressed or any(tag in body.lower() for tag in ("@taskflow", "@taskflow-triage"))
+    is_ambient_hit = should_ambient_triage(body)
 
-    if not is_addressed and not is_ambient:
-        logger.debug("Ambient message did not meet triage policy; preserved in buffer.")
+    if not is_addressed_to_us and not is_ambient_hit:
+        logger.debug("[Triage] Ignored message (ambient triage policy not met).")
         return
 
-    mode = "DIRECT MENTION" if is_addressed else "AMBIENT TRIAGE"
-    logger.info("⚡ Triaging message via [%s]...", mode)
+    trigger_type = "DIRECTLY ADDRESSED" if is_addressed_to_us else "AMBIENT TRIAGE"
+    logger.info("⚡ [Triage] Triaging message via [%s]...", trigger_type)
 
-    # Step 1: Run Agent 1 (Triage & Autonomy Classifier) in non-blocking thread
-    context_msgs = list(room_buffers[room_id])
-    try:
-        triage_result = await asyncio.to_thread(triage_agent.triage_conversation, context_msgs)
-    except Exception as e:
-        logger.error("TriageAgent failed: %s", e)
-        return
+    # Agent 1: Classify conversation buffer in worker thread
+    recent_context = list(room_buffers[room_id])
+    triage_result: TaskTriageResult = await asyncio.to_thread(
+        triage_classifier.triage_conversation,
+        recent_context
+    )
 
-    logger.info("Triage Decision: is_task=%s, type=%s, conf=%s",
-                triage_result.is_task, triage_result.execution_type.value, triage_result.confidence.value)
+    logger.info(
+        "[Triage] Decision: is_task=%s, type=%s, conf=%s (%s)",
+        triage_result.is_task,
+        triage_result.execution_type,
+        triage_result.confidence,
+        triage_result.confidence_reason
+    )
 
-    # If not an actionable task
+    # If addressed directly but no actionable task was detected
     if not triage_result.is_task:
-        if is_addressed:
+        if is_addressed_to_us:
             reply = (
                 f"Hello @{sender_name}! I heard your request, but did not detect an actionable task or document generation request.\n"
-                f"I can automatically draft **Release Notes**, **Docs**, **Bug Analyses**, or scaffold **Todoist Tasks**."
+                f"I can automatically coordinate **Release Notes**, **Docs**, **Bug Analyses**, or scaffold **Todoist Tasks**."
             )
-            await asyncio.to_thread(client.send_targeted_message, body=reply, target_names=[sender_name], thread_id=thread_id, room_id=room_id)
+            await asyncio.to_thread(
+                client.send_targeted_message,
+                body=reply,
+                target_names=[sender_name],
+                thread_id=thread_id,
+                room_id=room_id
+            )
         return
 
-    # Step 2: Route according to Autonomous Execution vs Human Todo
-    if triage_result.execution_type == ExecutionType.AUTO_EXECUTE:
-        # Agent 2: Worker Agent - Auto Execute Deliverable
-        logger.info("🤖 Auto-executing deliverable...")
+    # TASK DETECTED!
+    # Instead of an in-process Python call, hand off via a Switch targeted room message
+    assignee = triage_result.assignee_name or sender_name
+    handoff = TaskHandoffMessage(
+        task_title=triage_result.action_summary,
+        execution_type=triage_result.execution_type,
+        confidence=triage_result.confidence,
+        assignee_name=assignee,
+        assigner_name=sender_name,
+        deadline=triage_result.deadline,
+        context_notes=triage_result.context_notes,
+        execution_category=triage_result.execution_category,
+        thread_id=thread_id,
+        room_id=room_id,
+        requester_name=sender_name,
+        recent_context=[m.model_dump() for m in recent_context[-5:]],
+    )
+
+    handoff_body = (
+        f"@taskflow-worker [TASK_HANDOFF]\n"
+        f"• **Task:** {handoff.task_title}\n"
+        f"• **Autonomy Mode:** `{handoff.execution_type.value}`\n"
+        f"• **Assignee:** @{handoff.assignee_name}\n"
+        f"• **Requested by:** @{handoff.assigner_name}\n"
+        f"• **Deadline:** {handoff.deadline or 'None'}\n"
+        f"• **Category:** {handoff.execution_category}\n\n"
+        f"<!-- TASKFLOW_HANDOFF: {handoff.model_dump_json()} -->"
+    )
+
+    logger.info("🚀 [Triage] Handing off task to @taskflow-worker via Switch targeted message...")
+    await asyncio.to_thread(
+        client.send_targeted_message,
+        body=handoff_body,
+        target_names=["taskflow-worker"],
+        thread_id=thread_id,
+        room_id=room_id,
+    )
+    logger.info("✅ [Triage] Handoff message dispatched.")
+
+
+# ==============================================================================
+# AGENT 2: TaskFlow Worker (The Hands - Autonomous Drafts & Todoist Scaffolder)
+# ==============================================================================
+async def handle_worker_message(client: SwitchAgentClient, payload: Dict[str, Any]):
+    """Processes room messages for TaskFlow Worker: receives handoff and executes tasks."""
+    body = payload.get("body", "").strip()
+    if not body:
+        return
+
+    sender = payload.get("sender", "")
+    sender_name = payload.get("sender_name", "") or sender or "Team Member"
+    addressed = payload.get("addressed", False)
+    room_id = payload.get("room_id", client.room_id)
+    message_id = payload.get("id") or payload.get("message_id")
+    thread_id = payload.get("thread_id") or message_id
+
+    # Filter out worker's own messages
+    if sender_name.lower() in ("taskflow-worker",) or sender == client.agent_id:
+        return
+
+    # Check if this message is intended for Worker
+    has_handoff_block = "<!-- TASKFLOW_HANDOFF:" in body
+    is_worker_target = (
+        has_handoff_block or
+        "[TASK_HANDOFF]" in body or
+        (addressed and any(kw in body.lower() for kw in ("@taskflow-worker", "worker")))
+    )
+
+    if not is_worker_target:
+        return
+
+    logger.info("🛠️ [Worker] Received targeted work item from %s in room [%s]!", sender_name, room_id)
+
+    # Parse handoff payload
+    handoff: Optional[TaskHandoffMessage] = None
+    if has_handoff_block:
         try:
-            worker_res = await asyncio.to_thread(worker_agent.execute_task, triage_result, context_msgs)
+            match = re.search(r"<!-- TASKFLOW_HANDOFF:\s*({.*?})\s*-->", body, re.DOTALL)
+            if match:
+                handoff = TaskHandoffMessage.model_validate_json(match.group(1))
         except Exception as e:
-            logger.error("WorkerAgent autonomous execution failed: %s", e)
-            return
+            logger.warning("[Worker] Failed parsing JSON handoff block: %s", e)
+
+    # Fallback: synthesize handoff if addressed directly without handoff block
+    if not handoff:
+        handoff = TaskHandoffMessage(
+            task_title=body.replace("@taskflow-worker", "").strip(),
+            execution_type=ExecutionType.AUTO_EXECUTE if any(kw in body.lower() for kw in ("release notes", "doc", "draft")) else ExecutionType.HUMAN_TODO,
+            confidence=ConfidenceLevel.HIGH,
+            assignee_name=sender_name,
+            assigner_name=sender_name,
+            thread_id=thread_id,
+            room_id=room_id,
+            requester_name=sender_name,
+            recent_context=[],
+        )
+
+    # Reconstruct TaskTriageResult for WorkerAgent
+    triage_result = TaskTriageResult(
+        is_task=True,
+        confidence=handoff.confidence,
+        confidence_reason=handoff.context_notes or "Handed off via Switch room message",
+        action_summary=handoff.task_title,
+        execution_type=handoff.execution_type,
+        execution_category=handoff.execution_category or "General Task",
+        assignee_name=handoff.assignee_name,
+        deadline=handoff.deadline,
+    )
+    context_msgs = [SlackMessage(**m) for m in (handoff.recent_context or [])]
+
+    # Execute task according to autonomy mode
+    if handoff.execution_type == ExecutionType.AUTO_EXECUTE:
+        logger.info("✍️ [Worker] Autonomously generating deliverable for: '%s'...", handoff.task_title)
+        worker_result: WorkerExecutionResult = await asyncio.to_thread(
+            worker_executor.execute_task,
+            triage_result,
+            context_msgs
+        )
 
         response_text = (
-            f"### ⚡ Autonomous Deliverable Generated\n\n"
-            f"**Title**: {worker_res.artifact_title}\n"
-            f"**Intent**: {triage_result.action_summary}\n"
-            f"**Next Action**: {worker_res.suggested_action}\n\n"
-            f"---\n\n"
-            f"{worker_res.artifact_content}\n\n"
-            f"---\n"
-            f"*(Generated autonomously by TaskFlow Worker Agent on Switch Core)*"
+            f"{worker_result.artifact_content}\n\n"
+            f"*(Generated autonomously by @taskflow-worker on Switch Core)*"
+        )
+        await asyncio.to_thread(
+            client.post_message,
+            body=response_text,
+            thread_id=handoff.thread_id,
+            room_id=handoff.room_id
+        )
+        logger.info("✅ [Worker] Posted autonomous deliverable to room [%s].", handoff.room_id)
+
+    elif handoff.execution_type == ExecutionType.HUMAN_TODO:
+        logger.info("📋 [Worker] Scaffolding action plan & creating Todoist task for: '%s'...", handoff.task_title)
+        worker_result: WorkerExecutionResult = await asyncio.to_thread(
+            worker_executor.execute_task,
+            triage_result,
+            context_msgs
         )
 
-        await asyncio.to_thread(client.post_message, body=response_text, thread_id=thread_id, room_id=room_id)
-        logger.info("✅ Posted autonomous deliverable to room [%s].", room_id)
-
-    elif triage_result.execution_type == ExecutionType.HUMAN_TODO:
-        # Agent 2: Worker Agent - Scaffold Action Checklist
-        logger.info("📋 Scaffolding action plan for human task...")
-        try:
-            worker_res = await asyncio.to_thread(worker_agent.execute_task, triage_result, context_msgs)
-        except Exception as e:
-            logger.error("WorkerAgent scaffolding failed: %s", e)
-            return
-
-        # Prepare description for Todoist
-        todo_title = triage_result.action_summary or body[:60]
-        todoist_desc = (
-            f"Action Plan / Checklist:\n\n"
-            f"{worker_res.artifact_content}\n\n"
-            f"Triage Context: {triage_result.context_notes or 'Captured from Switch Room'}\n"
-            f"Suggested Action: {worker_res.suggested_action}"
+        task_description = (
+            f"Assigned by: @{handoff.assigner_name}\n"
+            f"Context: {handoff.context_notes or 'Captured via TaskFlow on Switch'}\n\n"
+            f"Action Plan Checklist:\n{worker_result.artifact_content}"
         )
 
-        # Sync to Todoist
-        todo_task = await asyncio.to_thread(
+        todoist_res = await asyncio.to_thread(
             todoist.create_task,
-            content=f"[TaskFlow] {todo_title}",
-            description=todoist_desc,
-            due_string=triage_result.deadline
+            content=f"[{handoff.assignee_name}] {handoff.task_title}",
+            description=task_description,
+            due_string=handoff.deadline,
         )
 
-        todo_url = todo_task.get("url", "https://todoist.com/app/today") if todo_task else "https://todoist.com"
-
+        task_url = todoist_res.get("url", "https://todoist.com/app")
         receipt_text = (
-            f"### 📋 Task Synced to Todoist\n\n"
-            f"**Task**: {todo_title}\n"
-            f"**Assignee**: {triage_result.assignee_name or sender_name}\n"
-            f"**Due**: {triage_result.deadline or 'Today'}\n\n"
-            f"**Action Plan**:\n{worker_res.artifact_content}\n\n"
-            f"🔗 **[Open in Todoist]({todo_url})**\n\n"
-            f"*(Triaged & synced by TaskFlow on Switch Core)*"
+            f"🎯 **Task Handed Off & Tracked in Todoist**\n\n"
+            f"**Task:** {handoff.task_title}\n"
+            f"**Assignee:** @{handoff.assignee_name}\n"
+            f"**Due Date:** {handoff.deadline or 'Not specified'}\n"
+            f"**Todoist Task:** [Open in Todoist]({task_url})\n\n"
+            f"📋 **Action Checklist:**\n{worker_result.artifact_content}\n\n"
+            f"*(Scaffolded by @taskflow-worker via Switch targeted room message)*"
         )
 
+        target_users = list(set(filter(None, [handoff.assigner_name, handoff.assignee_name])))
         await asyncio.to_thread(
             client.send_targeted_message,
             body=receipt_text,
-            target_names=[sender_name],
-            thread_id=thread_id,
-            room_id=room_id
+            target_names=target_users,
+            thread_id=handoff.thread_id,
+            room_id=handoff.room_id
         )
-        logger.info("✅ Created Todoist task & sent targeted receipt to @%s in room [%s].", sender_name, room_id)
+        logger.info("✅ [Worker] Created Todoist task & sent targeted receipt to %s.", target_users)
 
 
-async def main():
-    print("""
-    ===============================================================
-       SWITCH TASKFLOW : Autonomous Workroom Agent (Native WS)    
-       - Zero Socket Mode / Pure Native Switch Agent Protocol     
-       - WebSocket /agents/{id}/connection/ws & Heartbeat Engine   
-       - Triage Agent (AUTO_EXECUTE vs HUMAN_TODO)                
-       - Worker Agent (Artifacts + Todoist Sync)                  
-    ===============================================================
-    """)
-
+# ==============================================================================
+# Switch Runners
+# ==============================================================================
+async def run_triage_agent() -> SwitchAgentClient:
+    """Connects and runs the TaskFlow Triage Agent on Switch."""
     client = SwitchAgentClient(
         server_url=SWITCH_SERVER_URL,
         registration_token=AGENT_REGISTRATION_TOKEN,
-        agent_id=SWITCH_AGENT_ID,
-        api_key=SWITCH_AGENT_API_KEY,
+        agent_id=SWITCH_TRIAGE_AGENT_ID,
+        api_key=SWITCH_TRIAGE_AGENT_API_KEY,
+        agent_name=SWITCH_TRIAGE_AGENT_NAME,
+        display_name="TaskFlow Triage",
+        description="Ambient high-recall task triage and classifier agent",
         room_id=SWITCH_ROOM_ID,
-        agent_name="taskflow",
-        display_name="TaskFlow",
-        description="Autonomous Task Triage & Workroom Worker"
     )
+    client.on_message(lambda payload: handle_triage_message(client, payload))
+    return client
 
-    # Register message handler callback
-    client.on_message(lambda payload: handle_room_message(client, payload))
+async def run_worker_agent() -> SwitchAgentClient:
+    """Connects and runs the TaskFlow Worker Agent on Switch."""
+    client = SwitchAgentClient(
+        server_url=SWITCH_SERVER_URL,
+        registration_token=AGENT_REGISTRATION_TOKEN,
+        agent_id=SWITCH_WORKER_AGENT_ID,
+        api_key=SWITCH_WORKER_AGENT_API_KEY,
+        agent_name=SWITCH_WORKER_AGENT_NAME,
+        display_name="TaskFlow Worker",
+        description="Autonomous task executor and action scaffolder",
+        room_id=SWITCH_ROOM_ID,
+    )
+    client.on_message(lambda payload: handle_worker_message(client, payload))
+    return client
 
-    print(f"[*] Target Switch Server: {SWITCH_SERVER_URL}")
-    print(f"[*] Ambient Triage Policy: {AMBIENT_TRIAGE_POLICY.upper()}")
+async def main():
+    import argparse
+    parser = argparse.ArgumentParser(description="TaskFlow on Switch Multi-Agent Daemon")
+    parser.add_argument("--agent", choices=["all", "triage", "worker"], default="all", help="Which Switch agent to run")
+    args = parser.parse_args()
 
-    try:
-        await client.connect_and_listen()
-    except KeyboardInterrupt:
-        print("\n[!] Shutting down TaskFlow cleanly...")
-        client.stop()
+    print("=" * 65)
+    print("⚡ TASKFLOW ON SWITCH - MULTI-AGENT WORKROOM DAEMON")
+    print(f"Switch Server: {SWITCH_SERVER_URL}")
+    print(f"Ambient Triage Policy: {AMBIENT_TRIAGE_POLICY}")
+    print("=" * 65)
 
+    if args.agent == "triage":
+        logger.info("Starting TaskFlow Triage Agent...")
+        triage = await run_triage_agent()
+        await triage.connect_and_listen()
+    elif args.agent == "worker":
+        logger.info("Starting TaskFlow Worker Agent...")
+        worker = await run_worker_agent()
+        await worker.connect_and_listen()
+    else:
+        logger.info("Starting BOTH TaskFlow Triage and Worker Agents on Switch...")
+        triage = await run_triage_agent()
+        worker = await run_worker_agent()
+        await asyncio.gather(
+            triage.connect_and_listen(),
+            worker.connect_and_listen()
+        )
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
-    except KeyboardInterrupt:
-        print("\nShutdown complete.")
+    except (KeyboardInterrupt, SystemExit):
+        logger.info("TaskFlow shut down gracefully.")

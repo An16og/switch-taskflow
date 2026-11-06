@@ -202,8 +202,8 @@ class SwitchAgentClient:
                     except Exception:
                         continue
 
-                    event = frame.get("event")
-                    data = frame.get("data", {})
+                    event = frame.get("event") or frame.get("type")
+                    data = frame.get("data") or frame.get("payload") or {}
 
                     # Real-time Heartbeat ping -> pong (must never stall)
                     if event == "ping":
@@ -213,29 +213,63 @@ class SwitchAgentClient:
                         continue
 
                     if event == "connection_state":
-                        logger.info("Connection confirmed by Switch Server: rooms=%s", data.get("rooms"))
+                        logger.info("Connection confirmed by Switch Server: rooms=%s", frame.get("rooms") or data.get("rooms"))
                         continue
 
                     if event == "message":
-                        # Dispatch handler in non-blocking background task
-                        logger.info("Received room message: sender=%s, addressed=%s", data.get("sender_name"), data.get("addressed"))
+                        # Switch message frames may nest payload under frame['data']['payload'] or frame['payload']
+                        raw_data = frame.get("data") if isinstance(frame.get("data"), dict) else frame
+                        if isinstance(raw_data.get("payload"), dict):
+                            inner_payload = raw_data["payload"]
+                        elif isinstance(frame.get("payload"), dict):
+                            inner_payload = frame["payload"]
+                        else:
+                            inner_payload = raw_data
+
+                        event_data = {
+                            "room_id": frame.get("room_id") or raw_data.get("room_id") or self.room_id,
+                            "channel_type": frame.get("channel_type") or raw_data.get("channel_type"),
+                            **inner_payload,
+                        }
+                        sender = event_data.get("sender_name") or event_data.get("sender")
+                        logger.info("Received room message: sender=%s, addressed=%s, body=%s", sender, event_data.get("addressed"), str(event_data.get("body", ""))[:40])
                         for handler in self._message_handlers:
-                            asyncio.create_task(self._safe_invoke_handler(handler, data))
+                            asyncio.create_task(self._safe_invoke_handler(handler, event_data))
 
         except Exception as e:
             logger.error("WebSocket connection error: %s", e)
             raise
 
-    async def _safe_invoke_handler(self, handler: Callable[[Dict[str, Any]], Awaitable[None]], data: Dict[str, Any]):
+    async def _safe_invoke_handler(self, handler: Callable[[Dict[str, Any]], Any], data: Dict[str, Any]):
         try:
-            await handler(data)
+            res = handler(data)
+            if asyncio.iscoroutine(res):
+                await res
         except Exception as ex:
-            logger.error("Error in async message handler: %s", ex, exc_info=True)
+            logger.error("Error in message handler: %s", ex, exc_info=True)
 
     def stop(self):
         self._running = False
         if self._ws:
             asyncio.create_task(self._ws.close())
+
+    def invite_agent_to_room(self, agent_name: str, room_id: Optional[str] = None) -> bool:
+        """Invites another Switch agent into the room by name."""
+        target_room = room_id or self.room_id
+        if not target_room:
+            return False
+        payload = {"room_id": target_room, "agent_name": agent_name}
+        try:
+            resp = requests.post(
+                f"{self.server_url}/agents/{self.agent_id}/ops/invite_agent_to_room",
+                headers=self.op_headers,
+                json=payload,
+                timeout=10,
+            )
+            return resp.status_code == 200
+        except Exception as e:
+            logger.warning("Failed inviting agent %s: %s", agent_name, e)
+            return False
 
     def post_message(self, body: str, thread_id: Optional[str] = None, room_id: Optional[str] = None) -> Dict[str, Any]:
         """Broadcasts a message to the connected room (optionally threaded)."""

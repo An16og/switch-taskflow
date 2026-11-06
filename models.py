@@ -1,5 +1,5 @@
 from enum import Enum
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 from pydantic import BaseModel, Field
 
 class ConfidenceLevel(str, Enum):
@@ -53,6 +53,21 @@ class TaskTriageResult(BaseModel):
         default=False,
         description="True if critical context is missing and the sliding window should expand."
     )
+
+class TaskHandoffMessage(BaseModel):
+    """Structured handoff payload sent from TaskFlow Triage to TaskFlow Worker via Switch targeted room message."""
+    task_title: str
+    execution_type: ExecutionType
+    confidence: ConfidenceLevel
+    assignee_name: Optional[str] = None
+    assigner_name: Optional[str] = None
+    deadline: Optional[str] = None
+    context_notes: Optional[str] = None
+    execution_category: Optional[str] = "General Task"
+    thread_id: Optional[str] = None
+    room_id: Optional[str] = None
+    requester_name: str
+    recent_context: Optional[List[Dict[str, Any]]] = None
 
 class WorkerExecutionResult(BaseModel):
     artifact_title: str = Field(

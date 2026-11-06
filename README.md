@@ -18,69 +18,61 @@ In fast-paced engineering and product teams (Slack / Teams), informal task hando
 Most bot solutions fall into **The Passive To-Do Trap**: they simply create another item on an already overwhelming to-do list. The human still has to do 100% of the manual labor, and informal asks get lost in chat noise.
 
 ## 🚀 The Solution: TaskFlow on Switch
-**TaskFlow** operates as a native **Switch AI Workroom Agent**. Rather than opening a fragile direct socket to Slack, TaskFlow speaks Switch's native Agent Protocol over WebSocket (`/agents/{id}/connection/ws`), binds to persistent rooms, processes real-time event frames, and replies with Switch operations (`post_message`, `send_targeted_message`). Switch's collaboration bridges (Slack, Mattermost) transparently translate these room events to team chat!
+**TaskFlow** operates as a native multi-agent workroom system deployed directly on **Switch AI Core**. Rather than opening a fragile direct socket to Slack or coupling logic inside an in-process script, TaskFlow registers **two independent Switch Agents**:
 
-TaskFlow introduces a **Two-Agent Collaborative Assembly Line**:
-1. **Agent 1: Triage & Intent Classifier (The Ear):** Ambiently listens to the Switch Room, extracts the task metadata (Assignee, Assigner, Deadline, Context), and categorizes tasks by **AI Autonomy**.
-2. **Agent 2: Autonomous Worker Agent (The Hands):**
-   * **`AUTO_EXECUTE` (Routine Knowledge Work):** If the ask is routine (drafting release notes, writing documentation, generating incident postmortems, synthesizing meeting notes), the Worker Agent **actually does the work on the spot** and publishes the completed markdown artifact directly to the room!
-   * **`HUMAN_TODO` (Complex Engineering / Action):** If the task requires human expertise (code review, database migrations, client calls), the Worker Agent scaffolds a **concrete 3-step action checklist** and dispatches it to **Todoist** with targeted receipts.
+1. **`taskflow-triage` (The Ear - Ambient / High-Recall Classifier):**  
+   Listens to the Switch room WebSocket (`/agents/{id}/connection/ws`), ambiently analyzes conversation, extracts task metadata (Assignee, Assigner, Deadline, Category), and classifies tasks by **AI Autonomy**.
+2. **`taskflow-worker` (The Hands - Deliverable Drafter & Action Scaffolder):**  
+   Receives task assignments from `taskflow-triage` **natively via Switch targeted room messages** (`send_targeted_message`), never through in-process function calls!
+   * **`AUTO_EXECUTE` (Routine Knowledge Work):** If the ask is routine (drafting release notes, writing documentation, generating incident postmortems), the Worker Agent **autonomously drafts the artifact** and broadcasts it to the room via `post_message`.
+   * **`HUMAN_TODO` (Complex Engineering / Action):** If the task requires human expertise, the Worker scaffolds a **concrete 3-step action checklist**, creates the task in **Todoist**, and sends targeted receipts to the team.
+
+3. **Declarative Room Template (`triage-pair.template.yaml`):**  
+   Written in the official **Switch Version 2 Template Specification**, allowing the entire two-agent workroom to be provisioned declaratively via Switch Console or `create_room_from_yaml`.
 
 ---
 
 ## 🏛️ System Architecture
 
 ```
-                 [ Team Chat: Slack / Teams / Mattermost ]
-                                │
-                                ▼
-                     [ SWITCH LOCAL SERVER ]
-                     • Core Gateway & REST API (Port 52422)
-                     • Collaboration Bridge (Slack Adapter)
-                     • Room & Role State Management
-                                │
+                  [ Team Chat: Slack / Teams / Mattermost ]
+                                 │
+                                 ▼
+                      [ SWITCH LOCAL SERVER ]
+                      • Core Gateway & REST API (Port 52422)
+                      • Collaboration Bridge (Slack Adapter)
+                      • Room State & Targeted Message Bus
+                                 │
                     WebSocket Stream & Ops API
-          (/agents/{id}/connection/ws  +  /ops/post_message)
-                                │
-                                ▼
-               ┌─────────────────────────────────┐
-               │    TASKFLOW SWITCH AGENT CLIENT │
-               │   • Persistent WS Connection    │
-               │   • Real-Time Heartbeat (Pong)  │
-               │   • Ambient & Addressed Policy  │
-               └────────────────┬────────────────┘
-                                │
-                ┌───────────────┴───────────────┐
-                ▼                               ▼
-    [ AGENT 1: TRIAGE AGENT ]     [ RESILIENT MULTI-MODEL GATEWAY ]
-    • Ambient stream listener     • Primary: Gemini 3.5 Flash
-    • Intent & Entity resolution  • Fallback 1: OpenAI GPT-4o
-    • High-recall task detection  • Fallback 2: Claude 3.5 Sonnet
-                │
-                ▼
-      Is it AI-Actionable?
-        ├── YES (AUTO_EXECUTE) ──► [ AGENT 2: WORKER AGENT ]
-        │                          • Autonomously drafts the artifact (Docs, Release Notes)
-        │                          • Publishes via Switch: `post_message`
-        │
-        └── NO (HUMAN_TODO)   ──► [ AGENT 2: WORKER AGENT ]
-                                   • Scaffolds 3-step Action Checklist
-                                   • Dispatches to Todoist REST API v1
-                                   • Targeted receipt via: `send_targeted_message`
+          (/agents/{id}/connection/ws  +  /ops/send_targeted_message)
+                                 │
+        ┌────────────────────────┴────────────────────────┐
+        ▼                                                 ▼
+┌───────────────────────────────┐     ┌───────────────────────────────┐
+│ SWITCH AGENT: TASKFLOW-TRIAGE │     │ SWITCH AGENT: TASKFLOW-WORKER │
+│ • Persistent WS & Heartbeat   │     │ • Persistent WS & Heartbeat   │
+│ • Ambient Stream Listener     │     │ • Listens for Targeted Handoff│
+│ • Intent & Autonomy Classifier│     │ • Autonomously Drafts Docs    │
+│ • Multi-Provider LLM Gateway  │     │ • Scaffolds Action Checklists │
+│ • ID: 8e390fbb-737c-4018-...  │     │ • Syncs Tasks to Todoist REST │
+└───────────────┬───────────────┘     └───────────────▲───────────────┘
+                │                                     │
+                │  Switch Targeted Room Message       │
+                │  (send_targeted_message)            │
+                └─────────────────────────────────────┘
 ```
 
 ---
 
 ## 🛡️ Switch Native Protocol Highlights
 
-* **Pure Native Switch Agent Protocol:** No standalone Slack Socket Mode bypass. TaskFlow registers via `POST /agents`, authenticates with bearer tokens, and connects over `/agents/{id}/connection/ws`.
+* **Two Registered Switch Agents:** Registered via `POST /agents` with independent identities, `always_on` integration profiles, and dedicated API keys.
+* **Targeted Room Message Handoffs:** Handoffs between Triage and Worker are decoupled room messages (`send_targeted_message` targeted to `taskflow-worker`), making the agents truly distributed and independently restartable.
+* **Declarative Template Provisioning:** Fully validated against Switch Core's `lint_template` validator using `triage-pair.template.yaml` (Switch version 2 specification).
 * **Zero-Lapse Heartbeat Engine:** Switch expects heartbeat `ping` frames and requires `pong` beats every 2 seconds. TaskFlow uses an asynchronous non-blocking event pump with `asyncio.to_thread` for LLM tasks so heartbeats are never delayed.
 * **Ambient vs. Addressed Triage Policy:**
-  - **`addressed` (`@taskflow`):** Always activates full triage & worker execution.
+  - **`addressed` (`@taskflow-triage`):** Always triggers task evaluation.
   - **`ambient` (room chatter):** Analyzes conversational background without interrupting unless explicit action item triggers ("todo", "deploy", "audit", "fix") are detected.
-* **Ops Routing:**
-  - `post_message(body, thread_id)` for public artifacts and room deliverables.
-  - `send_targeted_message(body, target_names)` for targeted task receipts and handoffs.
 
 ---
 
@@ -88,19 +80,23 @@ TaskFlow introduces a **Two-Agent Collaborative Assembly Line**:
 
 ```
 switch-taskflow/
+├── templates/
+│   └── triage-pair.template.yaml     # Declarative Switch V2 room template (triage + worker + room)
 ├── agents/
 │   ├── __init__.py
-│   ├── triage_agent.py               # Agent 1: Triage, Entity Extraction & Autonomy Classifier
-│   └── worker_agent.py               # Agent 2: Autonomous Artifact Generation & Action Scaffolder
-├── switch_client.py                  # Native Switch Agent Client (WS, Heartbeat, Ops)
-├── bot.py                            # Main TaskFlow Agent Daemon
-├── config.py                         # Environment and Switch configuration
-├── models.py                         # Pydantic schemas (TaskTriageResult, WorkerExecutionResult)
+│   ├── triage_agent.py               # Triage classifier & entity extraction
+│   └── worker_agent.py               # Deliverable generator & 3-step action scaffolder
+├── switch_client.py                  # Native Switch Agent Client (WebSocket, Heartbeat, Ops)
+├── bot.py                            # Multi-Agent Daemon (Runs taskflow-triage & taskflow-worker)
+├── config.py                         # Environment and multi-agent configuration
+├── models.py                         # Pydantic schemas (TaskTriageResult, TaskHandoffMessage, etc.)
 ├── llm_gateway.py                    # Multi-Provider Resilient LLM Gateway (Gemini -> OpenAI -> Claude)
 ├── todoist_client.py                 # Todoist REST API v1 Client with auto-retry
 ├── run_switch_server.py              # Switch Core local server runner
-├── simulate_switch_interaction.py    # End-to-end Switch WebSocket multi-agent simulation
+├── simulate_switch_interaction.py    # End-to-end Switch WebSocket multi-agent handoff simulation
+├── test_switch_handoff.py            # Targeted room message WebSocket verification test
 ├── test_multi_agent.py               # Offline unit test suite
+├── triage-pair.template.yaml         # Root copy of Switch room template
 ├── requirements.txt                  # Python dependencies
 └── README.md
 ```
@@ -132,10 +128,18 @@ Copy `.env.example` to `.env`:
 # Switch Server
 SWITCH_SERVER_URL=http://127.0.0.1:52422
 AGENT_REGISTRATION_TOKEN=8EQjhvEdXZst0NB_7HGKjcjJO5itH_sx
-SWITCH_AGENT_ID=b8e848ea-edf6-4f14-8368-412b0745b88e
-SWITCH_AGENT_API_KEY=u5PplbAq_PAnj-qXobDroWakOzCgA7htWAXCTO1-ejs
 SWITCH_ROOM_ID=a327cb7f-9cd0-45f8-8872-9a96022f8522
 AMBIENT_TRIAGE_POLICY=action_keywords
+
+# Agent 1: TaskFlow Triage (The Ear)
+SWITCH_TRIAGE_AGENT_NAME=taskflow-triage
+SWITCH_TRIAGE_AGENT_ID=8e390fbb-737c-4018-9960-a36bc1457fd6
+SWITCH_TRIAGE_AGENT_API_KEY=3w37cL1CxA0U9fnvU7SVZOeq96TQ-6GGCaBhwbOmKy0
+
+# Agent 2: TaskFlow Worker (The Hands)
+SWITCH_WORKER_AGENT_NAME=taskflow-worker
+SWITCH_WORKER_AGENT_ID=deb3d8b9-c6f3-47b2-be0a-3f272d9ae425
+SWITCH_WORKER_AGENT_API_KEY=1uz2H6a5LiO9BfK_gEB8buN1qU-j1CYOww1v48w04-4
 
 # LLM Keys
 GEMINI_API_KEY=AIzaSy...
@@ -148,13 +152,16 @@ In Terminal 1 (Start Switch Server if not running via Console):
 python run_switch_server.py
 ```
 
-In Terminal 2 (Start TaskFlow Agent):
+In Terminal 2 (Start Both TaskFlow Agents):
 ```bash
 python bot.py
+# Or run individually:
+# python bot.py --agent triage
+# python bot.py --agent worker
 ```
 
 ### 5. Run the Simulation Test Suite
-Verify the entire two-agent pipeline over Switch WebSocket:
+Verify the entire two-agent targeted handoff over Switch WebSocket:
 ```bash
 python simulate_switch_interaction.py
 ```
@@ -166,3 +173,4 @@ python simulate_switch_interaction.py
 * **Hosts:** WeMakeDevs & DevTools Academy
 * **Powered by:** Switch AI (`switchagents.ai` / SandboxAQ)
 * **GitHub Repository:** [https://github.com/An16og/switch-taskflow](https://github.com/An16og/switch-taskflow)
+* **Room Template:** [`templates/triage-pair.template.yaml`](file:///C:/Users/anujj/OneDrive/Desktop/switch-taskflow/templates/triage-pair.template.yaml) (Switch V2)
