@@ -62,8 +62,12 @@ async def run_simulation():
     print("[*] Waiting 2 seconds for both agents to establish Switch WebSocket connections...")
     await asyncio.sleep(2)
 
-    print(f"[*] TaskFlow Triage active in Room: {room_id}")
-    print(f"[*] TaskFlow Worker active in Room: {room_id}")
+    # Set agent addressing to 'anyone' so teammates and sibling agents can address them
+    triage_client.set_agent_addressing(SWITCH_WORKER_AGENT_ID, "anyone")
+    worker_client.set_agent_addressing(SWITCH_TRIAGE_AGENT_ID, "anyone")
+
+    print(f"[*] TaskFlow Triage active in Room: {room_id} (addressing: anyone)")
+    print(f"[*] TaskFlow Worker active in Room: {room_id} (addressing: anyone)")
 
     print("\n" + "-" * 60)
     print("TEST 1: Simulating AUTO_EXECUTE task addressed to TaskFlow Triage")

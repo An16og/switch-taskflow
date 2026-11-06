@@ -271,6 +271,28 @@ class SwitchAgentClient:
             logger.warning("Failed inviting agent %s: %s", agent_name, e)
             return False
 
+    def set_agent_addressing(self, target_agent_id: str, addressing: str = "anyone") -> bool:
+        """Sets an agent's addressing policy ('anyone', 'owner_and_owner_agents', or 'owner_only')."""
+        payload = {
+            "agent_id": target_agent_id,
+            "addressing": addressing
+        }
+        try:
+            resp = requests.post(
+                f"{self.server_url}/agents/{self.agent_id}/ops/update_agent_detail",
+                headers=self.op_headers,
+                json=payload,
+                timeout=10,
+            )
+            if resp.status_code == 200:
+                logger.info("Updated addressing for agent %s to '%s'", target_agent_id, addressing)
+                return True
+            logger.warning("Failed updating addressing for agent %s [%s]: %s", target_agent_id, resp.status_code, resp.text)
+            return False
+        except Exception as e:
+            logger.warning("Error updating addressing for agent %s: %s", target_agent_id, e)
+            return False
+
     def post_message(self, body: str, thread_id: Optional[str] = None, room_id: Optional[str] = None) -> Dict[str, Any]:
         """Broadcasts a message to the connected room (optionally threaded)."""
         payload: Dict[str, Any] = {"body": body}

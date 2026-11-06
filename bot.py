@@ -384,6 +384,13 @@ async def main():
         logger.info("Starting BOTH TaskFlow Triage and Worker Agents on Switch...")
         triage = await run_triage_agent()
         worker = await run_worker_agent()
+        # Set agent addressing to 'anyone' so teammates and the sibling agent can talk to them
+        try:
+            triage.set_agent_addressing(SWITCH_WORKER_AGENT_ID, "anyone")
+            worker.set_agent_addressing(SWITCH_TRIAGE_AGENT_ID, "anyone")
+        except Exception as e:
+            logger.warning("Could not set addressing on startup: %s", e)
+
         await asyncio.gather(
             triage.connect_and_listen(),
             worker.connect_and_listen()
