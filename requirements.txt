@@ -12,8 +12,11 @@ anthropic>=0.18.0
 # Task Tracker
 todoist-api-python>=2.1.3
 
-# Switch Trust SDK
-switch-trust-sdk-py>=0.1.0
+# Switch Trust Guardrails SDK
+switch-trust-sdk-py[genai,openai,anthropic]>=1.1.0
+
+# YAML Template Engine
+pyyaml>=6.0
 
 # Optional Slack Bolt (if bridging legacy socket mode)
 slack-bolt>=1.18.0

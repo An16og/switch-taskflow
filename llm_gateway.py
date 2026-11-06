@@ -3,38 +3,83 @@ import logging
 from typing import Type, TypeVar, Optional
 from pydantic import BaseModel
 
-from config import GEMINI_API_KEY, OPENAI_API_KEY, ANTHROPIC_API_KEY
+from config import (
+    GEMINI_API_KEY,
+    OPENAI_API_KEY,
+    ANTHROPIC_API_KEY,
+    SWITCH_TRUST_API_KEY,
+    SWITCH_TRUST_GATEWAY_URL,
+    SWITCH_TRUST_POLICY_ID,
+    SWITCH_TRUST_REQUIRE_GUARDRAILS,
+    SWITCH_TRUST_ALLOW_INSECURE_GATEWAY,
+)
 
 logger = logging.getLogger("LLMGateway")
 T = TypeVar("T", bound=BaseModel)
 
 class LLMGateway:
     """
-    Multi-provider, resilient LLM Gateway.
-    Automatically cascades: Gemini (Primary) -> OpenAI (Fallback) -> Claude (Fallback).
-    Guarantees that rate limits or API key quotas never crash the system.
+    Multi-provider, resilient LLM Gateway integrated with Switch Trust guardrails.
+    Automatically wraps every client with switch_trust.wrap(...) to intercept prompt injections,
+    data leaks, and toxic content before requests reach upstream model providers.
+    Cascades: Gemini (Primary) -> OpenAI (Fallback) -> Claude (Fallback).
     """
     def __init__(self):
         self._gemini_client = None
         self._openai_client = None
         self._anthropic_client = None
 
+    def _wrap_trust(self, client):
+        """Wraps an LLM client with Switch Trust guardrails routing."""
+        try:
+            import os
+            import switch_trust
+
+            # If user configured SWITCH_TRUST_API_KEY, activate full guardrails routing
+            if SWITCH_TRUST_API_KEY:
+                kwargs = {
+                    "api_key": SWITCH_TRUST_API_KEY,
+                    "gateway_url": SWITCH_TRUST_GATEWAY_URL or "https://api.switchagents.ai",
+                    "policy_id": SWITCH_TRUST_POLICY_ID or "default",
+                    "forward_llm_key": True,
+                    "allow_insecure_gateway": SWITCH_TRUST_ALLOW_INSECURE_GATEWAY,
+                    "require_guardrails": SWITCH_TRUST_REQUIRE_GUARDRAILS,
+                }
+            else:
+                # If no API key is provided yet, wrap with require_guardrails=False
+                # and remove partial gateway_url from os.environ to avoid mismatched parameter error
+                if "SWITCH_TRUST_GATEWAY_URL" in os.environ and not os.environ.get("SWITCH_TRUST_API_KEY"):
+                    del os.environ["SWITCH_TRUST_GATEWAY_URL"]
+                kwargs = {
+                    "require_guardrails": False,
+                }
+
+            wrapped = switch_trust.wrap(client, **kwargs)
+            logger.info("🛡️ Client wrapped with Switch Trust guardrails (%s)", type(client).__name__)
+            return wrapped
+        except Exception as e:
+            logger.warning("Could not wrap client with switch_trust: %s", e)
+            return client
+
     def _get_gemini(self):
         if self._gemini_client is None and GEMINI_API_KEY:
             from google import genai
-            self._gemini_client = genai.Client(api_key=GEMINI_API_KEY)
+            raw_client = genai.Client(api_key=GEMINI_API_KEY)
+            self._gemini_client = self._wrap_trust(raw_client)
         return self._gemini_client
 
     def _get_openai(self):
         if self._openai_client is None and OPENAI_API_KEY:
             from openai import OpenAI
-            self._openai_client = OpenAI(api_key=OPENAI_API_KEY)
+            raw_client = OpenAI(api_key=OPENAI_API_KEY)
+            self._openai_client = self._wrap_trust(raw_client)
         return self._openai_client
 
     def _get_anthropic(self):
         if self._anthropic_client is None and ANTHROPIC_API_KEY:
             from anthropic import Anthropic
-            self._anthropic_client = Anthropic(api_key=ANTHROPIC_API_KEY)
+            raw_client = Anthropic(api_key=ANTHROPIC_API_KEY)
+            self._anthropic_client = self._wrap_trust(raw_client)
         return self._anthropic_client
 
     def generate_structured(self, prompt: str, system_prompt: str, response_schema: Type[T]) -> T:

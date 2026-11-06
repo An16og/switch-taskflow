@@ -39,6 +39,13 @@ SWITCH_WORKER_AGENT_API_KEY = os.getenv("SWITCH_WORKER_AGENT_API_KEY", "1uz2H6a5
 SWITCH_AGENT_ID = os.getenv("SWITCH_AGENT_ID", SWITCH_TRIAGE_AGENT_ID).strip()
 SWITCH_AGENT_API_KEY = os.getenv("SWITCH_AGENT_API_KEY", SWITCH_TRIAGE_AGENT_API_KEY).strip()
 
+# Switch Trust Guardrails Configuration
+SWITCH_TRUST_API_KEY = os.getenv("SWITCH_TRUST_API_KEY", "").strip()
+SWITCH_TRUST_GATEWAY_URL = os.getenv("SWITCH_TRUST_GATEWAY_URL", "https://api.switchagents.ai").strip()
+SWITCH_TRUST_POLICY_ID = os.getenv("SWITCH_TRUST_POLICY_ID", "default").strip()
+SWITCH_TRUST_REQUIRE_GUARDRAILS = os.getenv("SWITCH_TRUST_REQUIRE_GUARDRAILS", "false").strip().lower() in ("true", "1", "yes")
+SWITCH_TRUST_ALLOW_INSECURE_GATEWAY = os.getenv("SWITCH_TRUST_ALLOW_INSECURE_GATEWAY", "false").strip().lower() in ("true", "1", "yes")
+
 # Ambient Triage Policy ("addressed_only", "action_keywords", "all")
 AMBIENT_TRIAGE_POLICY = os.getenv("AMBIENT_TRIAGE_POLICY", "action_keywords").strip().lower()
 
