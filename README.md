@@ -86,16 +86,22 @@ switch-taskflow/
 │   ├── __init__.py
 │   ├── triage_agent.py               # Triage classifier & entity extraction
 │   └── worker_agent.py               # Deliverable generator & 3-step action scaffolder
+├── jobs/
+│   ├── __init__.py
+│   └── triage_channel.py             # Channel Triage Job (backlog scanner & digest publisher)
+├── security.py                       # Switch Trust & Prompt Injection Defense
 ├── switch_client.py                  # Native Switch Agent Client (WebSocket, Heartbeat, Ops)
 ├── bot.py                            # Multi-Agent Daemon (Runs taskflow-triage & taskflow-worker)
 ├── config.py                         # Environment and multi-agent configuration
 ├── models.py                         # Pydantic schemas (TaskTriageResult, TaskHandoffMessage, etc.)
-├── llm_gateway.py                    # Multi-Provider Resilient LLM Gateway (Gemini -> OpenAI -> Claude)
+├── llm_gateway.py                    # Switch Trust Wrapped Multi-Provider LLM Gateway
 ├── todoist_client.py                 # Todoist REST API v1 Client with auto-retry
-├── run_switch_server.py              # Switch Core local server runner
 ├── simulate_switch_interaction.py    # End-to-end Switch WebSocket multi-agent handoff simulation
 ├── test_switch_handoff.py            # Targeted room message WebSocket verification test
-├── test_multi_agent.py               # Offline unit test suite
+├── test_channel_triage_job.py        # Channel Triage Job test suite
+├── test_trust_guardrails.py          # Switch Trust guardrails test suite
+├── test_multi_agent.py               # Offline multi-agent pipeline test suite
+├── ROOM_BRIEFING.md                  # Comprehensive room instructions & operational guide
 ├── triage-pair.template.yaml         # Root copy of Switch room template
 ├── requirements.txt                  # Python dependencies
 └── README.md
@@ -146,13 +152,8 @@ GEMINI_API_KEY=AIzaSy...
 TODOIST_API_TOKEN=...
 ```
 
-### 4. Start Switch Core & TaskFlow
-In Terminal 1 (Start Switch Server if not running via Console):
-```bash
-python run_switch_server.py
-```
-
-In Terminal 2 (Start Both TaskFlow Agents):
+### 4. Start TaskFlow Agents
+Ensure Switch is running (via Switch Console or Switch Server daemon), then start both TaskFlow agents:
 ```bash
 python bot.py
 # Or run individually:

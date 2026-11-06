@@ -23,3 +23,13 @@ desktop.ini
 
 # Logs
 *.log
+
+# Scratch & Local App Inspection Scripts (Not part of product)
+search_*.py
+inspect_*.py
+read_*.py
+extract_*.py
+find_*.py
+check_*.py
+start_*.py
+run_switch_server.py
