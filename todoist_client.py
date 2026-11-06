@@ -24,7 +24,7 @@ class TodoistClient:
         """
         Creates a task in Todoist.
         - content: Task title (action summary)
-        - description: Assigner details + context + Slack permalink
+        - description: Assigner details + context + action plan
         - due_string: Natural language date or ISO timestamp (e.g. 'Tomorrow 5pm')
         """
         if not self.api_token:
@@ -36,8 +36,9 @@ class TodoistClient:
             "description": description
         }
 
-        if due_string:
-            payload["due_string"] = due_string
+        # Filter out invalid or vague due_strings
+        if due_string and str(due_string).strip().lower() not in ("none", "null", "asap", "n/a"):
+            payload["due_string"] = str(due_string).strip()
 
         try:
             response = requests.post(
@@ -46,6 +47,17 @@ class TodoistClient:
                 json=payload,
                 timeout=10
             )
+            # If 400 due to invalid date format, retry without due_string
+            if response.status_code == 400 and "date format" in response.text.lower():
+                logger.warning(f"Todoist rejected due_string '{due_string}'. Retrying without due_string...")
+                payload.pop("due_string", None)
+                response = requests.post(
+                    TODOIST_API_URL,
+                    headers=self.headers,
+                    json=payload,
+                    timeout=10
+                )
+
             response.raise_for_status()
             task_data = response.json()
             logger.info(f"Successfully created Todoist task: {task_data.get('id')} - {content}")
