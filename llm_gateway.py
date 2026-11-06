@@ -43,10 +43,17 @@ class LLMGateway:
         """
         errors = []
 
-        # 1. Try Primary: Gemini (3.5-flash -> 3.1-flash-lite)
+        # 1. Try Primary: Gemini Models (cascade across active versions)
         gemini = self._get_gemini()
         if gemini:
-            for model in ["gemini-3.5-flash", "gemini-3.1-flash-lite"]:
+            models_to_try = [
+                "gemini-3.5-flash-lite",
+                "gemini-3.8-flash",
+                "gemini-3.7-flash",
+                "gemini-3.5-flash",
+                "gemini-3.1-flash-lite"
+            ]
+            for model in models_to_try:
                 try:
                     from google.genai import types
                     cfg = types.GenerateContentConfig(
