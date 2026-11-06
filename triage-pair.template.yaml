@@ -89,9 +89,22 @@ resources:
         value: ["{$creator}"]
       - value: []
     instructions: |
-      This room is monitored by TaskFlow.
-      - @taskflow-triage ambiently monitors conversations for tasks and to-dos.
-      - @taskflow-worker receives handoffs to draft knowledge artifacts or create Todoist tasks.
+      This room is monitored by TaskFlow, an autonomous multi-agent workroom pair.
+
+      ### 1. What TaskFlow Does:
+      - taskflow-triage: Ambiently monitors conversation streams, extracts actionable tasks, and determines autonomy level.
+      - taskflow-worker: Receives targeted handoffs to either autonomously draft knowledge deliverables or scaffold human action plans with Todoist sync.
+
+      ### 2. Autonomy Thresholds:
+      - AUTO_EXECUTE (Auto-Draft): For self-contained knowledge creation (release notes, docs, bug analyses, postmortems). No external authority needed; deliverable is drafted directly into the room.
+      - HUMAN_TODO (Ask a Human): For production deployments, DB maintenance, security audits, or approvals. Scaffolds a 3-step action checklist, syncs to Todoist with natural due dates, and sends a targeted receipt to the assignee.
+
+      ### 3. Where Artifacts Go:
+      - Knowledge Deliverables: Broadcast directly as formatted Markdown in the room or thread.
+      - Human Action Tasks: Synced to Todoist API v1 with interactive checklist in description and receipt link in chat.
+
+      ### 4. Special Jobs:
+      - Say "@taskflow-triage triage this channel" to trigger a full channel triage job analyzing the recent backlog.
     kickoff: >-
       @taskflow-triage ambient listener is active. @taskflow-worker is online.
       Direct tasks to @taskflow-triage or mention actionable items in chat.

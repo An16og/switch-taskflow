@@ -368,14 +368,74 @@ class SwitchAgentClient:
         fallback_body = f"{target_prefix} {body}" if target_prefix else body
         return self.post_message(fallback_body, thread_id, room_id=room_id)
 
-    def read_context(self, limit: int = 20) -> List[Dict[str, Any]]:
-        """Reads recent messages and context from the room."""
-        resp = requests.post(
-            f"{self.server_url}/agents/{self.agent_id}/ops/read_context",
-            headers=self.op_headers,
-            json={"limit": limit},
-            timeout=10,
-        )
-        if resp.status_code == 200:
-            return resp.json().get("result", {}).get("messages", [])
-        return []
+    def update_room_instructions(self, instructions: str, room_id: Optional[str] = None) -> bool:
+        """Updates the room instructions / operational briefing on Switch."""
+        target_room = room_id or self.room_id
+        if not target_room:
+            return False
+        payload = {
+            "room_id": target_room,
+            "instructions": instructions
+        }
+        try:
+            resp = requests.post(
+                f"{self.server_url}/agents/{self.agent_id}/ops/update_room",
+                headers=self.auth_headers,
+                json=payload,
+                timeout=10,
+            )
+            if resp.status_code == 200:
+                logger.info("Successfully updated room %s instructions (%d chars)", target_room, len(instructions))
+                return True
+            logger.warning("Failed updating room instructions [%s]: %s", resp.status_code, resp.text)
+            return False
+        except Exception as e:
+            logger.warning("Error updating room instructions: %s", e)
+            return False
+
+    def read_context(self, limit: int = 50, room_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Reads recent messages and context from the room, unpacked into a chronological timeline."""
+        target_room = room_id or self.room_id
+        payload = {"limit": limit}
+        if target_room:
+            payload["room_id"] = target_room
+
+        # Prefer auth_headers to avoid 409 if connection_id is not actively connected to WS
+        headers = self.auth_headers.copy()
+        if target_room:
+            headers["X-Switch-Room-Id"] = target_room
+
+        try:
+            resp = requests.post(
+                f"{self.server_url}/agents/{self.agent_id}/ops/read_context",
+                headers=headers,
+                json=payload,
+                timeout=10,
+            )
+            if resp.status_code != 200 and self.op_headers:
+                # Retry with op_headers if server requires caller connection
+                resp = requests.post(
+                    f"{self.server_url}/agents/{self.agent_id}/ops/read_context",
+                    headers=self.op_headers,
+                    json=payload,
+                    timeout=10,
+                )
+
+            if resp.status_code == 200:
+                result = resp.json().get("result", {})
+                if "threads" in result:
+                    messages = []
+                    for th in result["threads"]:
+                        if "root" in th and th["root"]:
+                            messages.append(th["root"])
+                        for rep in th.get("replies", []):
+                            if rep:
+                                messages.append(rep)
+                    messages.sort(key=lambda m: m.get("timestamp", 0))
+                    return messages
+                return result.get("messages", [])
+            logger.warning("read_context failed [%s]: %s", resp.status_code, resp.text)
+            return []
+        except Exception as e:
+            logger.error("Failed to read context: %s", e)
+            return []

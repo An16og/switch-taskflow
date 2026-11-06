@@ -122,6 +122,20 @@ async def handle_triage_message(client: SwitchAgentClient, payload: Dict[str, An
     trigger_type = "DIRECTLY ADDRESSED" if is_addressed_to_us else "AMBIENT TRIAGE"
     logger.info("⚡ [Triage] Triaging message via [%s]...", trigger_type)
 
+    # Check for On-Demand Channel Triage Job trigger
+    body_lower = body.lower()
+    if is_addressed_to_us and any(cmd in body_lower for cmd in ("triage this channel", "triage channel", "/triage-channel", "run channel triage")):
+        logger.info("📋 [Triage] Channel Triage Job triggered by %s for room %s", sender_name, room_id)
+        await asyncio.to_thread(
+            client.post_message,
+            body=f"🔍 @{sender_name} Starting full channel backlog triage scan (analyzing recent conversation history)...",
+            room_id=room_id
+        )
+        from jobs.triage_channel import ChannelTriageJob
+        job = ChannelTriageJob(triage_client=client, room_id=room_id)
+        await asyncio.to_thread(job.run, limit=50, post_digest=True)
+        return
+
     # Agent 1: Classify conversation buffer in worker thread
     recent_context = list(room_buffers[room_id])
     triage_result: TaskTriageResult = await asyncio.to_thread(
