@@ -237,15 +237,19 @@ class SwitchAgentClient:
         if self._ws:
             asyncio.create_task(self._ws.close())
 
-    def post_message(self, body: str, thread_id: Optional[str] = None) -> Dict[str, Any]:
+    def post_message(self, body: str, thread_id: Optional[str] = None, room_id: Optional[str] = None) -> Dict[str, Any]:
         """Broadcasts a message to the connected room (optionally threaded)."""
         payload: Dict[str, Any] = {"body": body}
         if thread_id:
             payload["thread_id"] = thread_id
 
+        headers = self.op_headers.copy()
+        if room_id:
+            headers["X-Switch-Room-Id"] = room_id
+
         resp = requests.post(
             f"{self.server_url}/agents/{self.agent_id}/ops/post_message",
-            headers=self.op_headers,
+            headers=headers,
             json=payload,
             timeout=10,
         )
@@ -258,7 +262,7 @@ class SwitchAgentClient:
             payload.pop("thread_id", None)
             retry_resp = requests.post(
                 f"{self.server_url}/agents/{self.agent_id}/ops/post_message",
-                headers=self.op_headers,
+                headers=headers,
                 json=payload,
                 timeout=10,
             )
@@ -274,6 +278,7 @@ class SwitchAgentClient:
         target_names: Optional[List[str]] = None,
         target_roles: Optional[List[str]] = None,
         thread_id: Optional[str] = None,
+        room_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Sends an addressed message to specific participants."""
         payload: Dict[str, Any] = {"body": body}
@@ -286,11 +291,15 @@ class SwitchAgentClient:
 
         # At least one target is required by Switch
         if not target_names and not target_roles:
-            return self.post_message(body, thread_id)
+            return self.post_message(body, thread_id, room_id=room_id)
+
+        headers = self.op_headers.copy()
+        if room_id:
+            headers["X-Switch-Room-Id"] = room_id
 
         resp = requests.post(
             f"{self.server_url}/agents/{self.agent_id}/ops/send_targeted_message",
-            headers=self.op_headers,
+            headers=headers,
             json=payload,
             timeout=10,
         )
@@ -301,7 +310,7 @@ class SwitchAgentClient:
         logger.warning("send_targeted_message failed [%s]: %s, falling back to post_message", resp.status_code, resp.text)
         target_prefix = " ".join([f"@{name}" for name in (target_names or [])])
         fallback_body = f"{target_prefix} {body}" if target_prefix else body
-        return self.post_message(fallback_body, thread_id)
+        return self.post_message(fallback_body, thread_id, room_id=room_id)
 
     def read_context(self, limit: int = 20) -> List[Dict[str, Any]]:
         """Reads recent messages and context from the room."""

@@ -135,7 +135,7 @@ async def handle_room_message(client: SwitchAgentClient, payload: Dict[str, Any]
                 f"Hello @{sender_name}! I heard your request, but did not detect an actionable task or document generation request.\n"
                 f"I can automatically draft **Release Notes**, **Docs**, **Bug Analyses**, or scaffold **Todoist Tasks**."
             )
-            await asyncio.to_thread(client.send_targeted_message, body=reply, target_names=[sender_name], thread_id=thread_id)
+            await asyncio.to_thread(client.send_targeted_message, body=reply, target_names=[sender_name], thread_id=thread_id, room_id=room_id)
         return
 
     # Step 2: Route according to Autonomous Execution vs Human Todo
@@ -159,8 +159,8 @@ async def handle_room_message(client: SwitchAgentClient, payload: Dict[str, Any]
             f"*(Generated autonomously by TaskFlow Worker Agent on Switch Core)*"
         )
 
-        await asyncio.to_thread(client.post_message, body=response_text, thread_id=thread_id)
-        logger.info("✅ Posted autonomous deliverable to room.")
+        await asyncio.to_thread(client.post_message, body=response_text, thread_id=thread_id, room_id=room_id)
+        logger.info("✅ Posted autonomous deliverable to room [%s].", room_id)
 
     elif triage_result.execution_type == ExecutionType.HUMAN_TODO:
         # Agent 2: Worker Agent - Scaffold Action Checklist
@@ -204,9 +204,10 @@ async def handle_room_message(client: SwitchAgentClient, payload: Dict[str, Any]
             client.send_targeted_message,
             body=receipt_text,
             target_names=[sender_name],
-            thread_id=thread_id
+            thread_id=thread_id,
+            room_id=room_id
         )
-        logger.info("✅ Created Todoist task & sent targeted receipt to @%s.", sender_name)
+        logger.info("✅ Created Todoist task & sent targeted receipt to @%s in room [%s].", sender_name, room_id)
 
 
 async def main():
