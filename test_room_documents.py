@@ -387,6 +387,63 @@ class TestRoomDocuments(unittest.TestCase):
         self.assertIn(doc.doc_id, dismiss_body)
         self.assertIn("[Dismissed]", dismiss_body)
 
+    def test_apply_room_briefing_calls_update_room_instructions(self):
+        """Verifies apply_room_briefing loads ROOM_BRIEFING.md and calls update_room_instructions."""
+        client = SwitchAgentClient(
+            server_url="http://127.0.0.1:52422",
+            agent_id="test_worker_briefing",
+            api_key="test_key",
+            room_id="room_briefing_test",
+        )
+
+        mock_update = MagicMock(return_value=True)
+        client.update_room_instructions = mock_update
+
+        success = client.apply_room_briefing(room_id="room_briefing_test")
+        self.assertTrue(success)
+        mock_update.assert_called_once()
+
+        call_args = mock_update.call_args
+        instructions = call_args[0][0] if call_args[0] else call_args[1].get("instructions")
+        target_room = call_args[1].get("room_id") if "room_id" in call_args[1] else (call_args[0][1] if len(call_args[0]) > 1 else None)
+
+        self.assertIn("TaskFlow Room Briefing", instructions)
+        self.assertIn("Dual-Agent Workroom Pair", instructions)
+        self.assertEqual(target_room, "room_briefing_test")
+
+    def test_connect_and_listen_applies_briefing_on_connect(self):
+        """Verifies connect_and_listen invokes apply_room_briefing on connect."""
+        client = SwitchAgentClient(
+            server_url="http://127.0.0.1:52422",
+            agent_id="test_worker_briefing_connect",
+            api_key="test_key",
+            room_id="room_connect_test",
+        )
+        client.register_or_validate = MagicMock(return_value=True)
+        client.ensure_room = MagicMock(return_value="room_connect_test")
+        client.apply_room_briefing = MagicMock(return_value=True)
+
+        class MockWs:
+            async def __aenter__(self):
+                return self
+            async def __aexit__(self, exc_type, exc_val, exc_tb):
+                pass
+            async def recv(self):
+                client.stop()
+                return json.dumps({"event": "connection_state", "rooms": ["room_connect_test"]})
+            async def send(self, data):
+                pass
+            async def close(self):
+                pass
+
+        def mock_ws_connect(*args, **kwargs):
+            return MockWs()
+
+        with patch("websockets.connect", side_effect=mock_ws_connect):
+            asyncio.run(client.connect_and_listen(apply_briefing=True))
+
+            client.apply_room_briefing.assert_called()
+
 
 if __name__ == "__main__":
     unittest.main()

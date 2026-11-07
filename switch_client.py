@@ -3,6 +3,7 @@ import json
 import logging
 import re
 import uuid
+from pathlib import Path
 from typing import Callable, Awaitable, Optional, Dict, Any, List
 
 import requests
@@ -170,10 +171,17 @@ class SwitchAgentClient:
         """Registers an asynchronous callback for incoming room messages."""
         self._message_handlers.append(handler)
 
-    async def connect_and_listen(self):
+    async def connect_and_listen(self, apply_briefing: bool = True):
         """Connects over WebSocket with a dedicated heartbeat pump."""
         self.register_or_validate()
         self.ensure_room()
+
+        # Apply ROOM_BRIEFING.md on connect via update_room_instructions
+        if apply_briefing:
+            try:
+                self.apply_room_briefing(room_id=self.room_id)
+            except Exception as e:
+                logger.warning("Could not apply ROOM_BRIEFING.md on connect: %s", e)
 
         ws_url = (
             f"{self.ws_base_url}/agents/{self.agent_id}/connection/ws"
@@ -217,6 +225,11 @@ class SwitchAgentClient:
 
                     if event == "connection_state":
                         logger.info("Connection confirmed by Switch Server: rooms=%s", frame.get("rooms") or data.get("rooms"))
+                        if apply_briefing:
+                            try:
+                                self.apply_room_briefing(room_id=self.room_id)
+                            except Exception as e:
+                                logger.debug("Could not re-apply room briefing on connection_state: %s", e)
                         continue
 
                     if event == "message":
@@ -395,6 +408,48 @@ class SwitchAgentClient:
         except Exception as e:
             logger.warning("Error updating room instructions: %s", e)
             return False
+
+    def apply_room_briefing(
+        self,
+        briefing_path: Optional[str] = None,
+        room_id: Optional[str] = None,
+    ) -> bool:
+        """Applies ROOM_BRIEFING.md on connect via update_room_instructions.
+        
+        Reads the room operational briefing markdown file and updates room
+        instructions on Switch Core so all room participants and agents share
+        the operational context.
+        """
+        target_room = room_id or self.room_id
+        if not target_room:
+            logger.warning("apply_room_briefing called without target room_id")
+            return False
+
+        # Resolve candidate locations for ROOM_BRIEFING.md
+        candidates = []
+        if briefing_path:
+            candidates.append(Path(briefing_path))
+        candidates.extend([
+            Path(__file__).parent / "ROOM_BRIEFING.md",
+            Path.cwd() / "ROOM_BRIEFING.md",
+            Path(__file__).parent.parent / "ROOM_BRIEFING.md",
+        ])
+
+        briefing_content = None
+        for candidate in candidates:
+            if candidate.exists() and candidate.is_file():
+                try:
+                    briefing_content = candidate.read_text(encoding="utf-8")
+                    logger.info("Loaded room briefing from %s (%d chars)", candidate.name, len(briefing_content))
+                    break
+                except Exception as e:
+                    logger.debug("Failed reading briefing candidate %s: %s", candidate, e)
+
+        if not briefing_content:
+            logger.warning("ROOM_BRIEFING.md not found in candidate paths; skipped applying room briefing.")
+            return False
+
+        return self.update_room_instructions(briefing_content, room_id=target_room)
 
     def read_context(self, limit: int = 50, room_id: Optional[str] = None) -> List[Dict[str, Any]]:
         """Reads recent messages and context from the room, unpacked into a chronological timeline."""

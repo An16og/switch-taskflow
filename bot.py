@@ -718,10 +718,22 @@ async def main():
     if args.agent == "triage":
         logger.info("Starting TaskFlow Triage Agent...")
         triage = await run_triage_agent()
+        active_room = SWITCH_ROOM_ID or triage.room_id
+        try:
+            triage.apply_room_briefing(room_id=active_room)
+            logger.info("📋 [Switch Room] Applied ROOM_BRIEFING.md on connect via update_room_instructions")
+        except Exception as e:
+            logger.debug("Could not apply ROOM_BRIEFING.md on startup: %s", e)
         await triage.connect_and_listen()
     elif args.agent == "worker":
         logger.info("Starting TaskFlow Worker Agent...")
         worker = await run_worker_agent()
+        active_room = SWITCH_ROOM_ID or worker.room_id
+        try:
+            worker.apply_room_briefing(room_id=active_room)
+            logger.info("📋 [Switch Room] Applied ROOM_BRIEFING.md on connect via update_room_instructions")
+        except Exception as e:
+            logger.debug("Could not apply ROOM_BRIEFING.md on startup: %s", e)
         await worker.connect_and_listen()
     else:
         logger.info("Starting BOTH TaskFlow Triage and Worker Agents on Switch...")
@@ -734,8 +746,15 @@ async def main():
         except Exception as e:
             logger.warning("Could not set addressing on startup: %s", e)
 
-        # Attach default room references (GitHub repo & ticket tracker) on Switch
+        # Apply ROOM_BRIEFING.md on connect via update_room_instructions
         active_room = SWITCH_ROOM_ID or triage.room_id
+        try:
+            triage.apply_room_briefing(room_id=active_room)
+            logger.info("📋 [Switch Room] Applied ROOM_BRIEFING.md on connect via update_room_instructions")
+        except Exception as e:
+            logger.debug("Could not apply ROOM_BRIEFING.md on startup: %s", e)
+
+        # Attach default room references (GitHub repo & ticket tracker) on Switch
         try:
             worker.attach_default_room_references(active_room)
         except Exception as e:
