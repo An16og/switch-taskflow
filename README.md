@@ -38,7 +38,7 @@ TaskFlow transforms passive chat channels into an **Autonomous Multi-Agent Workr
  ┌────────────────────────────────────────────────────────────────────────────────────────┐
  │ 2. PERSISTENT SWITCH ROOM (taskflow-operations / ID: a327cb7f-...)                    │
  │    • Persistent room memory, document store, and real-time WebSocket event bus        │
- │    • Collaboration Bridge translates Slack / Mattermost chatter into Switch events    │
+ │    • Native Switch Workroom chat (with optional Slack / Mattermost bridges)           │
  └───────────────────────┬────────────────────────────────────────┬───────────────────────┘
                          │                                        │
            WS Stream (/agents/{id}/ws)              WS Stream (/agents/{id}/ws)
@@ -75,35 +75,88 @@ TaskFlow transforms passive chat channels into an **Autonomous Multi-Agent Workr
 
 ---
 
-## ⚡ One Command to Reproduce
+## 🚀 10-Minute Quickstart (Zero Slack Tokens Needed!)
 
-Verify the entire two-agent Switch WebSocket handoff, autonomous drafting, Todoist scaffolding, and deduplication pipeline in **one single command** (no manual typing or Slack setup required):
+> [!NOTE]
+> **No Slack Scavenger Hunt:** You do **not** need a Slack workspace, bot tokens (`xoxb-...`), app tokens (`xapp-...`), OAuth scopes, or webhook setup to run TaskFlow.
+> TaskFlow runs natively inside **Switch Core's Workroom**—exactly matching Switch's own quickstart workflow.
 
+Follow these 5 simple steps to get TaskFlow running locally in under 10 minutes:
+
+### Step 1: Ensure Switch Core is Running (1 min)
+If you have **Switch Console** open, Switch Core is already listening on `http://127.0.0.1:52422`.
+
+*Alternatively, run Switch Core via Docker or local CLI:*
 ```bash
-# Clone the repository
+# Via Docker:
+docker run -d -p 52422:52422 --name switch-core switchagents/switch-core:latest
+
+# Or verify local Switch Server health:
+curl http://127.0.0.1:52422/health
+```
+
+### Step 2: Clone & Install Dependencies (2 mins)
+```bash
 git clone https://github.com/An16og/switch-taskflow.git
 cd switch-taskflow
 
-# Setup virtual environment & dependencies
 python -m venv .venv
 source .venv/bin/activate  # On Windows: .venv\Scripts\activate
-pip install -r requirements.txt
 
-# Run the complete live Multi-Agent Verification Simulation!
+pip install -r requirements.txt
+```
+
+### Step 3: Add Your LLM API Key (1 min)
+Copy the pre-configured `.env.example` file. All Switch server URLs, room IDs, and agent keys are already populated for local development—**you only need to provide an LLM key**:
+
+```bash
+cp .env.example .env
+```
+
+Open `.env` and set your key (Gemini recommended, or OpenAI / Anthropic):
+```ini
+GEMINI_API_KEY=your-gemini-api-key
+# Optional: OPENAI_API_KEY=... / ANTHROPIC_API_KEY=...
+```
+*(Todoist is optional; tasks are tracked natively in the Switch Workroom if omitted).*
+
+### Step 4: Start the Two TaskFlow Agents (1 min)
+Launch the dual-agent daemon. Both `taskflow-triage` and `taskflow-worker` connect to Switch Core over independent WebSockets:
+```bash
+python bot.py
+```
+
+### Step 5: Chat in the Switch Workroom! (5 mins)
+Open **Switch Console** in your browser (`http://localhost:52422`) or your Switch desktop app:
+1. Open the **TaskFlow Operations** room.
+2. **Test Autonomous Knowledge Work (`AUTO_EXECUTE`):**
+   > Type: `@taskflow-triage please draft release notes for v1.3 with dark mode and security patches`  
+   > ⚡ **Result:** `taskflow-triage` hands off to `taskflow-worker` via targeted room message $\rightarrow$ `taskflow-worker` autonomously drafts and posts the complete formatted Markdown deliverable to the room!
+3. **Test Human Action Scaffolding (`HUMAN_TODO`):**
+   > Type: `Todo: Need someone to audit the database connection pool settings before tomorrow`  
+   > 📋 **Result:** `taskflow-triage` ambiently catches the todo $\rightarrow$ `taskflow-worker` scaffolds a 3-step technical action checklist with due date and posts the delivery receipt!
+
+---
+
+## ⚡ Instant Evaluation (One Command to Reproduce)
+
+Want to see the entire multi-agent flow immediately without even opening the browser? Run the automated end-to-end verification script:
+
+```bash
 python simulate_switch_interaction.py
 ```
 
-### What You Will See Live:
-- **Agents Connect:** Both `taskflow-triage` and `taskflow-worker` connect to Switch Core over independent WebSockets.
-- **Scenario 1 (`AUTO_EXECUTE`):** `@taskflow-triage` receives a request for v1.2 release notes $\rightarrow$ classifies as knowledge work $\rightarrow$ dispatches targeted message to `@taskflow-worker` $\rightarrow$ Worker autonomously drafts the Markdown deliverable and posts it to the room.
-- **Scenario 2 (`HUMAN_TODO`):** User posts ambient todo about database pool tuning $\rightarrow$ Triage detects action item $\rightarrow$ Worker scaffolds a 3-step technical action checklist, syncs to Todoist, and delivers a targeted receipt.
-- **Scenario 3 (Deduplication):** Follow-up conversational chatter in the sliding window is screened $\rightarrow$ Semantic deduplicator prevents duplicate task execution.
+### What You Will See Live in Terminal:
+- **WebSocket Handshake:** Both agents connect to Switch Core on port 52422 and register heartbeats.
+- **Scenario 1 (`AUTO_EXECUTE`):** Simulates Kunal asking for v1.2 release notes $\rightarrow$ Triage dispatches targeted handoff $\rightarrow$ Worker generates Markdown deliverable $\rightarrow$ Broadcasts to room.
+- **Scenario 2 (`HUMAN_TODO`):** Simulates Sarah posting an ambient database todo $\rightarrow$ Triage detects action item $\rightarrow$ Worker scaffolds 3-step action checklist $\rightarrow$ Delivers targeted receipt.
+- **Scenario 3 (Sliding Window Deduplication):** Simulates follow-up banter in the sliding context window $\rightarrow$ Semantic deduplicator screens tokens and suppresses duplicate task firing.
 
 ### Run the Complete Test Suite (33/33 Passing):
 ```bash
 python -m unittest discover
 ```
-*Executes all unit tests covering persistent approvals, prompt injection defense, secret leakage DLP gates, channel backlog triage jobs, and multi-agent WebSocket coordination in under 3 seconds!*
+*Executes all 33 unit and integration tests covering pending approvals, prompt injection defense, secret leakage DLP gates, channel backlog triage jobs, and multi-agent WebSocket coordination in under 2 seconds!*
 
 ---
 
@@ -119,109 +172,6 @@ Why is Switch AI Core fundamentally indispensable to TaskFlow? Here is what cata
 | **Access Control & Role Security** | **DIES.** Any bystander in a channel can click "Approve & Post" or dismiss a senior engineer's task. There is no authorization binding. | **THRIVES.** Actions are bound to Switch Room Roles (`owner`, `admin`, `lead`, `operator`) and assignees. Unauthorized clicks are blocked and badged (`🔒 Authorized`). |
 | **Prompt Injection & Data Leaks** | **DIES.** Untrusted channel text is interpolated directly into system prompts. Teammates can execute prompt injections or exfiltrate secrets via web beacons. | **THRIVES.** Protected by `switch-trust-sdk-py` + `security.py`. Includes boundary framing (`<untrusted_message>`), heuristic screening, and pre-post DLP scanning. |
 | **Room Onboarding & Setup** | **DIES.** Manual setup: creating bots, copying tokens, configuring webhooks, and inviting users by hand across multiple services. | **THRIVES.** Declarative provisioning via `triage-pair.template.yaml` (Switch V2). Entire dual-agent workroom provisions in 1 click. |
-
----
-
-## 🛠️ Exact Setup Guide
-
-### 1. Prerequisites
-- Python 3.10+ (Python 3.12 recommended)
-- Switch Console / Switch Server Daemon (Local or Remote)
-- At least **one** LLM API Key: Google Gemini (Primary), OpenAI (Fallback), or Anthropic (Fallback)
-- *(Optional)* Todoist API Token (Switch workroom task tracking is primary; Todoist is optional)
-
----
-
-### 2. Configure Environment (`.env`)
-Copy `.env.example` to `.env`:
-```bash
-cp .env.example .env
-```
-
-Fill in your configuration:
-```ini
-# ==============================================================================
-# Switch Server Configuration
-# ==============================================================================
-SWITCH_SERVER_URL=http://127.0.0.1:52422
-AGENT_REGISTRATION_TOKEN=8EQjhvEdXZst0NB_7HGKjcjJO5itH_sx
-SWITCH_ROOM_ID=a327cb7f-9cd0-45f8-8872-9a96022f8522
-AMBIENT_TRIAGE_POLICY=action_keywords
-
-# ==============================================================================
-# Switch Agents (Registered Identities & Keys)
-# ==============================================================================
-SWITCH_TRIAGE_AGENT_NAME=taskflow-triage
-SWITCH_TRIAGE_AGENT_ID=8e390fbb-737c-4018-9960-a36bc1457fd6
-SWITCH_TRIAGE_AGENT_API_KEY=3w37cL1CxA0U9fnvU7SVZOeq96TQ-6GGCaBhwbOmKy0
-
-SWITCH_WORKER_AGENT_NAME=taskflow-worker
-SWITCH_WORKER_AGENT_ID=deb3d8b9-c6f3-47b2-be0a-3f272d9ae425
-SWITCH_WORKER_AGENT_API_KEY=1uz2H6a5LiO9BfK_gEB8buN1qU-j1CYOww1v48w04-4
-
-# ==============================================================================
-# Switch Trust Guardrails & Security Policy
-# ==============================================================================
-SWITCH_TRUST_API_KEY=your-switch-trust-api-key
-SWITCH_TRUST_GATEWAY_URL=https://api.switchagents.ai
-SWITCH_TRUST_POLICY_ID=default
-SWITCH_TRUST_REQUIRE_GUARDRAILS=false
-SWITCH_TRUST_ALLOW_INSECURE_GATEWAY=false
-
-# ==============================================================================
-# LLM Providers (At least one required; gateway cascades automatically)
-# ==============================================================================
-GEMINI_API_KEY=your-gemini-api-key
-OPENAI_API_KEY=your-openai-api-key
-ANTHROPIC_API_KEY=your-anthropic-api-key
-
-# Optional External Task Sync
-TODOIST_API_TOKEN=
-```
-
----
-
-### 3. Setup Switch Core: Console / Docker / Daemon
-
-#### Option A: Switch Console (GUI - Recommended)
-1. Launch **Switch Console**.
-2. Navigate to **Templates** $\rightarrow$ Click **Import Template**.
-3. Select [`templates/triage-pair.template.yaml`](file:///C:/Users/anujj/OneDrive/Desktop/switch-taskflow/templates/triage-pair.template.yaml).
-4. Click **Create Workroom** $\rightarrow$ Switch provisions `taskflow-operations`, registers `taskflow-triage` and `taskflow-worker`, and initializes the collaboration bridge!
-
-#### Option B: Switch Server Daemon (Headless / Local)
-If running Switch Core as a local service or daemon:
-```bash
-# Ensure Switch Server is listening on port 52422:
-curl http://127.0.0.1:52422/health
-```
-
-#### Option C: Docker (Switch Server Container)
-```bash
-docker run -d \
-  --name switch-server \
-  -p 52422:52422 \
-  -e REGISTRATION_TOKEN=8EQjhvEdXZst0NB_7HGKjcjJO5itH_sx \
-  switchagents/switch-core:latest
-```
-
----
-
-### 4. Setup Collaboration Bridge (Slack / Mattermost)
-To connect your Switch Room to your team chat:
-1. In **Switch Console**, open **Bridges** $\rightarrow$ **Slack / Mattermost**.
-2. Authorize your workspace (Bot Token `xoxb-...` & App Token `xapp-...`).
-3. Map your channel (e.g. `#engineering-triage`) to Switch Room `taskflow-operations`.
-4. Team messages in Slack/Mattermost are now routed directly into the Switch event stream!
-
----
-
-### 5. Start the Dual-Agent Daemon
-Run both agents simultaneously in production mode:
-```bash
-python bot.py
-```
-*(Or run individually in separate containers: `python bot.py --agent triage` and `python bot.py --agent worker`)*.
 
 ---
 
@@ -250,7 +200,7 @@ When an engineering ask is self-contained knowledge creation, the worker immedia
 
 ```
 ┌────────────────────────────────────────────────────────────────────────┐
-│ #engineering-triage (Slack / Mattermost Bridge)                        │
+│ #engineering-triage (Switch Workroom / Chat Bridge)                    │
 ├────────────────────────────────────────────────────────────────────────┤
 │ Kunal [10:14 AM]                                                       │
 │ @taskflow-triage please draft release notes for v1.3 with dark mode.   │
@@ -278,7 +228,7 @@ When a task involves production infrastructure or human decisions, the worker sc
 │ 🎯 Task Handed Off & Tracked                                           │
 │ **Task:** Audit database connection pool settings                      │
 │ **Assignee:** @Sarah | **Due Date:** Tomorrow 5:00 PM                  │
-│ **Todoist:** [Open Task #6hwgqJW7q9j2Qv2m](https://todoist.com/app)    │
+│ **Status:** Tracked natively in Switch Workroom                        │
 │                                                                        │
 │ 📋 Action Checklist:                                                   │
 │ * [ ] Step 1: Inspect active connections via pg_stat_activity          │
@@ -301,6 +251,18 @@ When an attacker attempts prompt injection or secret exfiltration, Switch Trust 
 │ Status: Quarantined. Malicious payload was blocked from execution.    │
 └────────────────────────────────────────────────────────────────────────┘
 ```
+
+---
+
+## 🔌 Optional: Connecting Slack or Mattermost Bridges
+
+*Only needed if you wish to connect your Switch Workroom to an external team chat workspace:*
+
+1. Open **Switch Console** $\rightarrow$ Navigate to **Bridges**.
+2. Select **Slack** or **Mattermost**.
+3. Authorize your workspace (e.g. Slack Bot & App tokens).
+4. Map your channel (e.g. `#engineering-triage`) to Switch Room `taskflow-operations`.
+5. Messages from Slack/Mattermost are now transparently routed into the Switch Workroom event stream!
 
 ---
 
