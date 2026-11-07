@@ -181,7 +181,7 @@ class TestTodoistDiagnostics(unittest.TestCase):
         mock_resp.text = "Too many requests"
         mock_post.return_value = mock_resp
 
-        client = TodoistClient(api_token="valid_token")
+        client = TodoistClient(api_token="valid_token", base_backoff=0.001)
         res = client.sync_task(content="Test 429")
 
         self.assertFalse(res.success)
@@ -224,6 +224,107 @@ class TestTodoistDiagnostics(unittest.TestCase):
         self.assertIsNotNone(dict_res)
         self.assertEqual(dict_res["id"], "7890")
         self.assertEqual(dict_res["url"], "https://todoist.com/app/task/7890")
+
+    @patch("requests.post")
+    def test_idempotent_sync_with_external_id_and_header(self, mock_post):
+        """Verifies deterministic X-Request-Id header is sent and cached to prevent duplicates."""
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {
+            "id": "td_task_555",
+            "url": "https://todoist.com/app/task/td_task_555"
+        }
+        mock_post.return_value = mock_resp
+
+        client = TodoistClient(api_token="valid_token", base_backoff=0.001)
+        res1 = client.sync_task(
+            content="Deploy staging v2",
+            description="Run ansible playbook",
+            due_string="tomorrow",
+            external_id="sw_task_abc123"
+        )
+        self.assertTrue(res1.success)
+        self.assertEqual(res1.task_id, "td_task_555")
+        self.assertIsNotNone(res1.idempotency_key)
+
+        # Verify X-Request-Id header was sent on the POST call
+        call_headers = mock_post.call_args[1]["headers"]
+        self.assertIn("X-Request-Id", call_headers)
+        self.assertEqual(call_headers["X-Request-Id"], res1.idempotency_key)
+
+        # Repeated call with same external_id must return cached result without hitting network again
+        res2 = client.sync_task(
+            content="Deploy staging v2",
+            description="Run ansible playbook",
+            due_string="tomorrow",
+            external_id="sw_task_abc123"
+        )
+        self.assertTrue(res2.success)
+        self.assertEqual(res2.task_id, "td_task_555")
+        self.assertEqual(mock_post.call_count, 1, "Must not make duplicate HTTP request for same external_id")
+
+    @patch("requests.post")
+    def test_idempotency_content_hash_when_external_id_omitted(self, mock_post):
+        """Verifies deterministic content hash produces identical X-Request-Id and caches."""
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {
+            "id": "td_task_888",
+            "url": "https://todoist.com/app/task/td_task_888"
+        }
+        mock_post.return_value = mock_resp
+
+        client = TodoistClient(api_token="valid_token", base_backoff=0.001)
+        res1 = client.sync_task(content="Audit SSL certs", description="Check expiry on *.api.com")
+        self.assertTrue(res1.success)
+        self.assertEqual(res1.task_id, "td_task_888")
+
+        # Second call with identical content (no external_id) should hit idempotency cache
+        res2 = client.sync_task(content="Audit SSL certs", description="Check expiry on *.api.com")
+        self.assertTrue(res2.success)
+        self.assertEqual(res2.task_id, "td_task_888")
+        self.assertEqual(res1.idempotency_key, res2.idempotency_key)
+        self.assertEqual(mock_post.call_count, 1)
+
+    @patch("requests.post")
+    def test_http_429_retry_and_eventual_success(self, mock_post):
+        """Verifies that HTTP 429 triggers exponential backoff and succeeds on subsequent attempt."""
+        resp_429 = MagicMock()
+        resp_429.status_code = 429
+        resp_429.headers = {"Retry-After": "0.01"}
+        resp_429.text = "Rate limit exceeded"
+
+        resp_200 = MagicMock()
+        resp_200.status_code = 200
+        resp_200.json.return_value = {
+            "id": "td_task_retry_ok",
+            "url": "https://todoist.com/app/task/td_task_retry_ok"
+        }
+
+        # 429 on first 2 calls, 200 on 3rd call
+        mock_post.side_effect = [resp_429, resp_429, resp_200]
+
+        slept_times = []
+        client = TodoistClient(
+            api_token="valid_token",
+            max_retries=3,
+            base_backoff=0.001,
+            sleep_fn=lambda s: slept_times.append(s)
+        )
+
+        res = client.sync_task(content="Retried task", external_id="retry_test_1")
+        self.assertTrue(res.success)
+        self.assertEqual(res.task_id, "td_task_retry_ok")
+        self.assertEqual(res.retries_attempted, 2)
+        self.assertEqual(len(slept_times), 2)
+        self.assertEqual(mock_post.call_count, 3)
+
+        # Verify X-Request-Id was identical across all retry attempts
+        headers_first = mock_post.call_args_list[0][1]["headers"]["X-Request-Id"]
+        headers_second = mock_post.call_args_list[1][1]["headers"]["X-Request-Id"]
+        headers_third = mock_post.call_args_list[2][1]["headers"]["X-Request-Id"]
+        self.assertEqual(headers_first, headers_second)
+        self.assertEqual(headers_second, headers_third)
 
 
 class TestInteractionWithRoomTasks(unittest.TestCase):

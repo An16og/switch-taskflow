@@ -705,12 +705,13 @@ async def handle_worker_message(client: SwitchAgentClient, payload: Dict[str, An
             f"Action Plan Checklist:\n{worker_result.artifact_content}"
         )
 
-        # 2. Optional Todoist Sync with 4xx diagnostics
+        # 2. Optional Todoist Sync with 4xx diagnostics and idempotency
         sync_res = await asyncio.to_thread(
             todoist.sync_task,
             content=f"[{handoff.assignee_name}] {handoff.task_title}",
             description=task_description,
             due_string=handoff.deadline,
+            external_id=room_task.task_id,
         )
 
         task_url = sync_res.task_url if sync_res.success else None

@@ -158,11 +158,11 @@ python simulate_switch_interaction.py
 - **Scenario 2 (`HUMAN_TODO`):** Simulates Sarah posting an ambient database todo $\rightarrow$ Triage detects action item $\rightarrow$ Worker scaffolds 3-step action checklist $\rightarrow$ Delivers targeted receipt.
 - **Scenario 3 (Sliding Window Deduplication):** Simulates follow-up banter in the sliding context window $\rightarrow$ Semantic deduplicator screens tokens and suppresses duplicate task firing.
 
-### Run the Complete Test Suite (89/89 Passing):
+### Run the Complete Test Suite (92/92 Passing):
 ```bash
 python -m unittest discover
 ```
-*Executes all 89 unit and integration tests covering pending approvals, prompt injection defense, secret leakage DLP gates, channel backlog triage jobs, grounded context resolution, WebSocket heartbeat liveness, and multi-agent coordination in under 3 seconds!*
+*Executes all 92 unit and integration tests covering pending approvals, prompt injection defense, secret leakage DLP gates, channel backlog triage jobs, Todoist idempotency & 429 retry, grounded context resolution, WebSocket heartbeat liveness, and multi-agent coordination in under 3 seconds!*
 
 ---
 
@@ -328,5 +328,5 @@ switch-taskflow/
 * **Powered by:** Switch AI Core (`switchagents.ai` / SandboxAQ)
 * **GitHub Repository:** [https://github.com/An16og/switch-taskflow](https://github.com/An16og/switch-taskflow)
 * **Declarative Template:** [`templates/triage-pair.template.yaml`](file:///C:/Users/anujj/OneDrive/Desktop/switch-taskflow/templates/triage-pair.template.yaml) (Switch Version 2 Room Briefing & Scaffolding)
-* **Test Suite:** 89 Unit & Integration Tests Passing (100% Green)
+* **Test Suite:** 92 Unit & Integration Tests Passing (100% Green)
 * **License:** MIT

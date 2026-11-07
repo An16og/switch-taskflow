@@ -308,7 +308,8 @@ class ChannelTriageJob:
                             todoist_task = self.todoist_client.create_task(
                                 content=res.action_summary,
                                 description=exec_result.artifact_content,
-                                due_string=res.deadline
+                                due_string=res.deadline,
+                                external_id=room_task.task_id,
                             )
                             if todoist_task:
                                 if isinstance(todoist_task, dict):

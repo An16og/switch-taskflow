@@ -290,7 +290,8 @@ class InteractionDispatcher:
                     todo_res = self.todoist_client.create_task(
                         content=f"[{appr.assignee_name or 'Team'}] {appr.action_summary}",
                         description=f"Assigned by: @{user_name or appr.assigner_name}\n\nAction Plan:\n{appr.artifact_content}",
-                        due_string=appr.deadline
+                        due_string=appr.deadline,
+                        external_id=room_task.task_id if room_task else appr.approval_id,
                     )
                     if isinstance(todo_res, dict):
                         todoist_url = todo_res.get("url")
