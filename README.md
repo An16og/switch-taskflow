@@ -360,7 +360,7 @@ switch-taskflow/
 ├── models.py                         # Pydantic schemas (TaskTriageResult, TaskHandoffMessage, etc.)
 ├── .github/
 │   └── workflows/
-│       └── ci.yml                     # GitHub Actions CI matrix (Python 3.10, 3.11, 3.12)
+│       └── ci.yml                     # GitHub Actions CI matrix (Python 3.11, 3.12)
 ├── llm_gateway.py                    # Switch Trust Wrapped Multi-Provider LLM Gateway
 ├── todoist_client.py                 # Todoist REST API v1 Client with auto-retry & 4xx diagnostics
 ├── approvals.py                      # Persistent server-side pending approval store (<100 char buttons)

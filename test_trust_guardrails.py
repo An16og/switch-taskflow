@@ -2,6 +2,7 @@
 
 import sys
 import unittest
+from unittest.mock import patch
 
 if sys.stdout.encoding != 'utf-8':
     try:
@@ -25,9 +26,10 @@ from agents.worker_agent import WorkerAgent
 class TestSwitchTrustAndSecurity(unittest.TestCase):
     def test_switch_trust_client_wrapping(self):
         """Verifies that LLM clients are wrapped with Switch Trust SDK."""
-        gateway = LLMGateway()
-        gemini_client = gateway._get_gemini()
-        self.assertIsNotNone(gemini_client)
+        with patch("llm_gateway.GEMINI_API_KEY", "mock-gemini-key"):
+            gateway = LLMGateway()
+            gemini_client = gateway._get_gemini()
+            self.assertIsNotNone(gemini_client)
         print("✅ Google GenAI client initialized and wrapped with Switch Trust SDK.")
 
     def test_prompt_injection_sanitization(self):

@@ -165,8 +165,10 @@ class TestTaskPipeline(unittest.TestCase):
     def test_switch_owns_slack_connection_no_parallel_bolt(self):
         """Ensure TaskFlow config and bot do not mandate or initialize a parallel Slack Bolt app."""
         import config
+        from unittest.mock import patch
         # Verify that SLACK_BOT_TOKEN is not a required env variable in check_env()
-        self.assertTrue(config.check_env())
+        with patch.object(config, "GEMINI_API_KEY", "mock-gemini-key"):
+            self.assertTrue(config.check_env())
         # Verify that config does not mandate a parallel Bolt socket mode
         self.assertFalse(hasattr(config, "SLACK_APP_TOKEN"))
 
