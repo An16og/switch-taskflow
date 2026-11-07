@@ -41,6 +41,7 @@ from agents.triage_agent import TriageAgent
 from agents.worker_agent import WorkerAgent
 from todoist_client import TodoistClient
 from switch_client import SwitchAgentClient
+from deduplication import TaskDeduplicator
 
 # Configure logging
 logging.basicConfig(
@@ -59,6 +60,9 @@ gateway = LLMGateway()
 triage_classifier = TriageAgent(gateway=gateway)
 worker_executor = WorkerAgent(gateway=gateway)
 todoist = TodoistClient()
+
+# Task Deduplication engine per room (30-minute cooldown, 60% semantic similarity threshold)
+task_deduplicator = TaskDeduplicator(ttl_seconds=1800.0, similarity_threshold=0.60)
 
 # Sliding window buffer per room: keeps the last 15 messages for context
 room_buffers: Dict[str, Deque[SlackMessage]] = defaultdict(lambda: deque(maxlen=15))
@@ -138,9 +142,11 @@ async def handle_triage_message(client: SwitchAgentClient, payload: Dict[str, An
 
     # Agent 1: Classify conversation buffer in worker thread
     recent_context = list(room_buffers[room_id])
+    active_tasks = task_deduplicator.get_active_task_summaries(room_id)
     triage_result: TaskTriageResult = await asyncio.to_thread(
         triage_classifier.triage_conversation,
-        recent_context
+        recent_context,
+        active_tasks=active_tasks,
     )
 
     logger.info(
@@ -166,6 +172,40 @@ async def handle_triage_message(client: SwitchAgentClient, payload: Dict[str, An
                 room_id=room_id
             )
         return
+
+    # Task Deduplication Guardrail: Check if this task or trigger has already been handled
+    is_dup, dup_reason = task_deduplicator.is_duplicate(
+        room_id=room_id,
+        action_summary=triage_result.action_summary,
+        trigger_ts=msg_obj.ts,
+    )
+    if is_dup:
+        logger.info(
+            "🛑 [Triage] Suppressing duplicate task: '%s' (%s)",
+            triage_result.action_summary,
+            dup_reason
+        )
+        if is_addressed_to_us:
+            dup_notice = (
+                f"@{sender_name} ℹ️ Task **'{triage_result.action_summary}'** was already triaged recently.\n"
+                f"*(Deduplication active: {dup_reason})*"
+            )
+            await asyncio.to_thread(
+                client.send_targeted_message,
+                body=dup_notice,
+                target_names=[sender_name],
+                thread_id=thread_id,
+                room_id=room_id
+            )
+        return
+
+    # Record the newly detected task in deduplication registry
+    task_deduplicator.record_task(
+        room_id=room_id,
+        action_summary=triage_result.action_summary,
+        trigger_ts=msg_obj.ts,
+        execution_type=triage_result.execution_type.value,
+    )
 
     # TASK DETECTED!
     # Instead of an in-process Python call, hand off via a Switch targeted room message
@@ -296,6 +336,10 @@ async def handle_worker_message(client: SwitchAgentClient, payload: Dict[str, An
             thread_id=handoff.thread_id,
             room_id=handoff.room_id
         )
+        task_deduplicator.mark_completed(
+            room_id=handoff.room_id or client.room_id or "",
+            action_summary=handoff.task_title
+        )
         logger.info("✅ [Worker] Posted autonomous deliverable to room [%s].", handoff.room_id)
 
     elif handoff.execution_type == ExecutionType.HUMAN_TODO:
@@ -337,6 +381,10 @@ async def handle_worker_message(client: SwitchAgentClient, payload: Dict[str, An
             target_names=target_users,
             thread_id=handoff.thread_id,
             room_id=handoff.room_id
+        )
+        task_deduplicator.mark_completed(
+            room_id=handoff.room_id or client.room_id or "",
+            action_summary=handoff.task_title
         )
         logger.info("✅ [Worker] Created Todoist task & sent targeted receipt to %s.", target_users)
 

@@ -34,6 +34,7 @@ from agents.triage_agent import TriageAgent
 from agents.worker_agent import WorkerAgent
 from todoist_client import TodoistClient
 from security import sanitize_channel_text, detect_prompt_injection
+from deduplication import TaskDeduplicator
 
 logging.basicConfig(
     level=logging.INFO,
@@ -166,10 +167,10 @@ class ChannelTriageJob:
                 "digest_markdown": clean_digest,
             }
 
-        # 3. Analyze messages to detect tasks
+        # 3. Analyze messages to detect tasks with deduplication
         # Walk sliding windows across cleaned messages
         triaged_tasks: List[Dict[str, Any]] = []
-        seen_summaries = set()
+        deduplicator = TaskDeduplicator(ttl_seconds=86400.0, similarity_threshold=0.60)
 
         window_size = 5
         for i in range(len(cleaned_messages)):
@@ -190,15 +191,28 @@ class ChannelTriageJob:
             if not is_candidate:
                 continue
 
-            # Run through triage agent
-            result: TaskTriageResult = self.triage_agent.triage_conversation(window)
+            # Run through triage agent with active tasks context
+            active_tasks = deduplicator.get_active_task_summaries(self.room_id)
+            result: TaskTriageResult = self.triage_agent.triage_conversation(window, active_tasks=active_tasks)
             if not result.is_task:
                 continue
 
-            summary_key = (result.action_summary or "").strip().lower()
-            if not summary_key or summary_key in seen_summaries:
+            # Check for exact or semantic duplicates in this channel scan
+            is_dup, reason = deduplicator.is_duplicate(
+                room_id=self.room_id,
+                action_summary=result.action_summary,
+                trigger_ts=target_msg.ts,
+            )
+            if is_dup:
+                logger.info("🛑 Deduplicating task during channel scan: '%s' (%s)", result.action_summary, reason)
                 continue
-            seen_summaries.add(summary_key)
+
+            deduplicator.record_task(
+                room_id=self.room_id,
+                action_summary=result.action_summary,
+                trigger_ts=target_msg.ts,
+                execution_type=result.execution_type.value,
+            )
 
             triaged_tasks.append({
                 "result": result,

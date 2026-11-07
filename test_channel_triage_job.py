@@ -79,7 +79,7 @@ class TestChannelTriageJob(unittest.TestCase):
         self.mock_triage_client.read_context.return_value = simulated_messages
 
         # Mock TriageAgent decisions for predictable testing
-        def mock_triage_fn(messages):
+        def mock_triage_fn(messages, active_tasks=None, **kwargs):
             last_text = messages[-1].text if messages else ""
             if "release notes" in last_text.lower():
                 return TaskTriageResult(

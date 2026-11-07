@@ -89,6 +89,7 @@ switch-taskflow/
 ├── jobs/
 │   ├── __init__.py
 │   └── triage_channel.py             # Channel Triage Job (backlog scanner & digest publisher)
+├── deduplication.py                  # Semantic & sliding-window task deduplication engine
 ├── security.py                       # Switch Trust & Prompt Injection Defense
 ├── switch_client.py                  # Native Switch Agent Client (WebSocket, Heartbeat, Ops)
 ├── bot.py                            # Multi-Agent Daemon (Runs taskflow-triage & taskflow-worker)
@@ -99,6 +100,7 @@ switch-taskflow/
 ├── simulate_switch_interaction.py    # End-to-end Switch WebSocket multi-agent handoff simulation
 ├── test_switch_handoff.py            # Targeted room message WebSocket verification test
 ├── test_channel_triage_job.py        # Channel Triage Job test suite
+├── test_deduplication.py             # Task deduplication & sliding window test suite
 ├── test_trust_guardrails.py          # Switch Trust guardrails test suite
 ├── test_multi_agent.py               # Offline multi-agent pipeline test suite
 ├── ROOM_BRIEFING.md                  # Comprehensive room instructions & operational guide

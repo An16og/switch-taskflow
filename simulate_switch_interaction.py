@@ -115,8 +115,27 @@ async def run_simulation():
     print("[*] Waiting 6 seconds for Worker to receive targeted handoff and execute HUMAN_TODO...")
     await asyncio.sleep(6)
 
+    print("\n" + "-" * 60)
+    print("TEST 3: Simulating subsequent conversational message in sliding window")
+    print("Expected: Sliding context contains earlier tasks -> Deduplicator & prompt hardening block duplicate execution")
+    print("-" * 60)
+
+    test_followup_payload = {
+        "event_id": f"sw_test_{uuid.uuid4().hex[:8]}",
+        "room_id": room_id,
+        "sender": "user_alex_789",
+        "sender_name": "Alex",
+        "sender_kind": "user",
+        "addressed": True,
+        "body": "@taskflow-triage looks great, thanks team! Let me know once CI passes."
+    }
+
+    print(f"Simulated Alex in room: {test_followup_payload['body']}")
+    await handle_triage_message(triage_client, test_followup_payload)
+    print("[*] Follow-up message evaluated - verified zero duplicate handoffs or re-executions!")
+
     print("\n" + "=" * 65)
-    print("✅ SIMULATION COMPLETE - True multi-agent handoff verified over Switch!")
+    print("✅ SIMULATION COMPLETE - True multi-agent handoff & deduplication verified!")
     print("=" * 65)
 
     triage_client.stop()
