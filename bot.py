@@ -43,7 +43,12 @@ from todoist_client import TodoistClient
 from room_tasks import default_room_task_store
 from approvals import default_approval_store, ApprovalStatus
 from switch_client import SwitchAgentClient
-from deduplication import TaskDeduplicator
+from deduplication import (
+    TaskDeduplicator,
+    RoomBufferStore,
+    default_task_deduplicator,
+    default_room_buffer_store,
+)
 from security import validate_auto_post_safety, detect_prompt_injection
 from user_resolver import default_user_resolver
 from interactions import InteractionDispatcher, handle_confirm_assignment
@@ -76,10 +81,12 @@ worker_executor = WorkerAgent(gateway=gateway)
 todoist = TodoistClient()
 
 # Task Deduplication engine per room (30-minute cooldown, 60% semantic similarity threshold)
-task_deduplicator = TaskDeduplicator(ttl_seconds=1800.0, similarity_threshold=0.60)
+# Backed by SQLite persistence (taskflow_state.db) across restarts
+task_deduplicator = default_task_deduplicator
 
 # Sliding window buffer per room: keeps the last 15 messages for context
-room_buffers: Dict[str, Deque[SlackMessage]] = defaultdict(lambda: deque(maxlen=15))
+# Backed by SQLite persistence (taskflow_state.db) across restarts
+room_buffers = default_room_buffer_store
 
 # Action keywords for ambient triage policy
 ACTION_KEYWORDS = [
@@ -206,11 +213,16 @@ async def handle_triage_message(client: SwitchAgentClient, payload: Dict[str, An
         return
 
     # Task Deduplication Guardrail: Check if this task or trigger has already been handled
+    trigger_ref = str(message_id) if message_id else msg_obj.ts
     is_dup, dup_reason = task_deduplicator.is_duplicate(
         room_id=room_id,
         action_summary=triage_result.action_summary,
-        trigger_ts=msg_obj.ts,
+        trigger_ts=trigger_ref,
     )
+    if not is_dup and task_deduplicator.has_seen_trigger(room_id, msg_obj.ts):
+        is_dup = True
+        dup_reason = f"Message timestamp '{msg_obj.ts}' was already processed into a task"
+
     if is_dup:
         logger.info(
             "🛑 [Triage] Suppressing duplicate task: '%s' (%s)",
@@ -235,9 +247,11 @@ async def handle_triage_message(client: SwitchAgentClient, payload: Dict[str, An
     task_deduplicator.record_task(
         room_id=room_id,
         action_summary=triage_result.action_summary,
-        trigger_ts=msg_obj.ts,
+        trigger_ts=trigger_ref,
         execution_type=triage_result.execution_type.value,
     )
+    if message_id and msg_obj.ts != trigger_ref:
+        task_deduplicator.record_seen_trigger(room_id, msg_obj.ts)
 
     # TASK DETECTED!
     # Instead of an in-process Python call, hand off via a Switch targeted room message

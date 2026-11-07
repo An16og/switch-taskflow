@@ -61,6 +61,9 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "").strip()
 
+# TaskFlow Persistent State Storage (SQLite)
+TASKFLOW_STATE_DB = os.getenv("TASKFLOW_STATE_DB", "taskflow_state.db").strip()
+
 # Task Tracker (Optional - Switch room tasks & documents are primary)
 TODOIST_API_TOKEN = os.getenv("TODOIST_API_TOKEN", "").strip()
 

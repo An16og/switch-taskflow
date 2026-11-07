@@ -27,6 +27,14 @@ data/
 *.tmp
 room_tasks.json
 pending_approvals.json
+room_documents.json
+taskflow_state.db
+taskflow_state.db-journal
+taskflow_state.db-wal
+taskflow_state.db-shm
+*.db
+*.sqlite
+*.sqlite3
 
 # Scratch & Local App Inspection Scripts (Not part of product)
 search_*.py
