@@ -48,3 +48,8 @@ dependencies = [
 dev = [
     "pytest>=8.0.0"
 ]
+
+[project.urls]
+Homepage = "https://github.com/An16og/switch-taskflow"
+Repository = "https://github.com/An16og/switch-taskflow"
+Issues = "https://github.com/An16og/switch-taskflow/issues"
