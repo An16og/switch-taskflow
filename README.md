@@ -284,13 +284,16 @@ switch-taskflow/
 │   ├── __init__.py
 │   └── triage_channel.py             # Channel Triage Job (backlog scanner & digest publisher)
 ├── deduplication.py                  # Semantic & sliding-window task deduplication engine
+├── context_resolver.py               # Grounded repo & changelog context resolver
+├── user_resolver.py                  # Dynamic mentions, roster & Switch participant resolver
+├── room_tasks.py                     # Native Switch Room Task & Job Registry (Work stays in the room)
 ├── security.py                       # Switch Trust & Prompt Injection Defense + Pre-Post DLP Gate
 ├── switch_client.py                  # Native Switch Agent Client (WebSocket, Heartbeat, Ops)
 ├── bot.py                            # Multi-Agent Daemon (Runs taskflow-triage & taskflow-worker)
 ├── config.py                         # Environment and multi-agent configuration
 ├── models.py                         # Pydantic schemas (TaskTriageResult, TaskHandoffMessage, etc.)
 ├── llm_gateway.py                    # Switch Trust Wrapped Multi-Provider LLM Gateway
-├── todoist_client.py                 # Todoist REST API v1 Client with auto-retry
+├── todoist_client.py                 # Todoist REST API v1 Client with auto-retry & 4xx diagnostics
 ├── approvals.py                      # Persistent server-side pending approval store (<100 char buttons)
 ├── interactions.py                   # Role & assignee authorization dispatcher for interactive cards
 ├── slack_cards.py                    # Block Kit UI cards with authorization badges
@@ -301,6 +304,9 @@ switch-taskflow/
 ├── test_trust_guardrails.py          # Switch Trust guardrails test suite
 ├── test_approvals.py                 # Pending approvals & RBAC test suite
 ├── test_multi_agent.py               # Multi-agent pipeline test suite
+├── test_context_resolver.py          # Grounded worker context test suite
+├── test_user_resolver.py             # Assignee & mention resolver test suite
+├── test_room_tasks.py                # Room task store & Todoist 4xx diagnostics test suite
 ├── ROOM_BRIEFING.md                  # Comprehensive room instructions & operational guide
 ├── pyproject.toml                    # Package metadata & pinned dependencies
 ├── requirements.txt                  # Python dependencies
@@ -316,5 +322,5 @@ switch-taskflow/
 * **Powered by:** Switch AI Core (`switchagents.ai` / SandboxAQ)
 * **GitHub Repository:** [https://github.com/An16og/switch-taskflow](https://github.com/An16og/switch-taskflow)
 * **Declarative Template:** [`templates/triage-pair.template.yaml`](file:///C:/Users/anujj/OneDrive/Desktop/switch-taskflow/templates/triage-pair.template.yaml) (Switch Version 2)
-* **Test Suite:** 33 Unit & Integration Tests Passing (100% Green)
+* **Test Suite:** 68 Unit & Integration Tests Passing (100% Green)
 * **License:** MIT
