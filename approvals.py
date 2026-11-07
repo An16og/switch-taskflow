@@ -1,9 +1,10 @@
-"""Persistent Pending Approval Store for TaskFlow.
+"""Persistent Pending Approval Store with Role & Assignee Authorization for TaskFlow.
 
-Resolves Slack Block Kit 2,000-character payload limits:
-Instead of encoding full artifacts (release notes, postmortems, checklists)
-directly into interactive button 'value' fields, artifacts are persisted
-server-side and referenced by a lightweight approval ID (~17 chars).
+Resolves:
+1. Slack Block Kit 2,000-character payload limits by storing full Markdown
+   artifacts server-side and putting lightweight IDs (~17 chars) on button payloads.
+2. Unauthorized button clicks by binding approval actions strictly to designated
+   assignees, assigners, and Switch room role holders (e.g., owner, admin, lead, operator).
 """
 
 import json
@@ -13,7 +14,7 @@ import time
 import uuid
 from enum import Enum
 from pathlib import Path
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Tuple
 from pydantic import BaseModel, Field
 
 logger = logging.getLogger("PendingApprovalStore")
@@ -28,7 +29,7 @@ class ApprovalStatus(str, Enum):
 
 
 class PendingApproval(BaseModel):
-    """Full representation of a pending task or artifact approval."""
+    """Full representation of a pending task or artifact approval with role & assignee binding."""
     approval_id: str = Field(description="Short unique ID placed in button payload, e.g. 'appr_8f3a1b2c4d5e'")
     action_type: str = Field(default="AUTO_EXECUTE", description="AUTO_EXECUTE, HUMAN_TODO, or ASSIGNMENT")
     action_summary: str = Field(description="Action title or task summary")
@@ -51,6 +52,74 @@ class PendingApproval(BaseModel):
     resolved_at: Optional[float] = None
     resolved_by: Optional[str] = None
     metadata: Dict[str, Any] = Field(default_factory=dict)
+
+    # Role & Assignee Authorization Bindings
+    allowed_user_ids: List[str] = Field(default_factory=list, description="User IDs permitted to act")
+    allowed_user_names: List[str] = Field(default_factory=list, description="Usernames permitted to act")
+    allowed_roles: List[str] = Field(
+        default_factory=lambda: ["owner", "admin", "lead", "operator"],
+        description="Switch room roles permitted to act on this approval"
+    )
+
+    def is_user_authorized(
+        self,
+        user_id: Optional[str] = None,
+        user_name: Optional[str] = None,
+        user_roles: Optional[List[str]] = None
+    ) -> Tuple[bool, str]:
+        """Evaluates whether an actor has permission to approve, execute, or dismiss this task.
+        
+        Authorization is granted if the user satisfies ANY of:
+        1. Designated Assignee (`user_id == assignee_id` or `user_name == assignee_name`).
+        2. Designated Assigner / Requester (`user_id == assigner_id` or `user_name == assigner_name`).
+        3. Explicitly allowed users in `allowed_user_ids` or `allowed_user_names`.
+        4. Holds an allowed Switch room role (e.g., owner, admin, lead, operator).
+        
+        Returns:
+            (is_authorized: bool, reason_or_error: str)
+        """
+        clean_user_id = (user_id or "").strip().lower()
+        clean_user_name = (user_name or "").strip().lower().lstrip("@")
+        roles = [r.strip().lower() for r in (user_roles or []) if r]
+
+        # 1. Match Assignee
+        if self.assignee_id and clean_user_id and clean_user_id == self.assignee_id.lower():
+            return True, f"assignee_id:{self.assignee_id}"
+        if self.assignee_name and clean_user_name and clean_user_name == self.assignee_name.lower().lstrip("@"):
+            return True, f"assignee_name:{self.assignee_name}"
+
+        # 2. Match Assigner / Requester
+        if self.assigner_id and clean_user_id and clean_user_id == self.assigner_id.lower():
+            return True, f"assigner_id:{self.assigner_id}"
+        if self.assigner_name and clean_user_name and clean_user_name == self.assigner_name.lower().lstrip("@"):
+            return True, f"assigner_name:{self.assigner_name}"
+
+        # 3. Match Explicit Allowed Users
+        if clean_user_id and clean_user_id in [u.lower() for u in self.allowed_user_ids]:
+            return True, f"allowed_user_id:{user_id}"
+        if clean_user_name and clean_user_name in [u.lower().lstrip("@") for u in self.allowed_user_names]:
+            return True, f"allowed_user_name:{user_name}"
+
+        # 4. Match Switch Room Roles
+        allowed_roles_lower = [r.lower() for r in self.allowed_roles]
+        for role in roles:
+            if role in allowed_roles_lower:
+                return True, f"role:{role}"
+
+        # Build informative refusal message
+        authorized_parties = []
+        if self.assignee_name or self.assignee_id:
+            authorized_parties.append(f"Assignee (@{self.assignee_name or self.assignee_id})")
+        if self.assigner_name or self.assigner_id:
+            authorized_parties.append(f"Assigner (@{self.assigner_name or self.assigner_id})")
+        if self.allowed_roles:
+            authorized_parties.append(f"Room Roles ({', '.join(self.allowed_roles)})")
+
+        attempted_identity = f"@{user_name}" if user_name else (user_id or "Anonymous")
+        return False, (
+            f"Unauthorized: {attempted_identity} is not permitted to act on this approval. "
+            f"Allowed actors: {' / '.join(authorized_parties)}."
+        )
 
 
 class PendingApprovalStore:
@@ -129,15 +198,27 @@ class PendingApprovalStore:
         message_ts: Optional[str] = None,
         room_id: Optional[str] = None,
         switch_doc_id: Optional[str] = None,
+        allowed_user_ids: Optional[List[str]] = None,
+        allowed_user_names: Optional[List[str]] = None,
+        allowed_roles: Optional[List[str]] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> PendingApproval:
-        """Creates and persists a pending approval record.
-        
-        Returns:
-            PendingApproval instance containing the short approval_id.
-        """
+        """Creates and persists a pending approval record with role & assignee bindings."""
         self.cleanup_expired()
         approval_id = f"appr_{uuid.uuid4().hex[:12]}"
+
+        # Auto-populate allowed users if not explicitly specified
+        user_ids = list(allowed_user_ids) if allowed_user_ids is not None else []
+        for uid in (assignee_id, assigner_id):
+            if uid and uid not in user_ids:
+                user_ids.append(uid)
+
+        user_names = list(allowed_user_names) if allowed_user_names is not None else []
+        for uname in (assignee_name, assigner_name):
+            if uname and uname not in user_names:
+                user_names.append(uname)
+
+        roles = allowed_roles if allowed_roles is not None else ["owner", "admin", "lead", "operator"]
 
         appr = PendingApproval(
             approval_id=approval_id,
@@ -157,14 +238,19 @@ class PendingApprovalStore:
             message_ts=message_ts,
             room_id=room_id,
             switch_doc_id=switch_doc_id,
+            allowed_user_ids=user_ids,
+            allowed_user_names=user_names,
+            allowed_roles=roles,
             metadata=metadata or {},
         )
         self._approvals[approval_id] = appr
         self._save()
 
         logger.info(
-            "💾 [ApprovalStore] Persisted approval %s ('%s', %d chars content)",
-            approval_id, action_summary, len(artifact_content)
+            "💾 [ApprovalStore] Persisted approval %s ('%s', %d chars) bound to assignees=[%s] roles=[%s]",
+            approval_id, action_summary, len(artifact_content),
+            ", ".join(user_names or user_ids or ["None"]),
+            ", ".join(roles)
         )
         return appr
 
@@ -178,20 +264,41 @@ class PendingApprovalStore:
         approval_id: str,
         status: ApprovalStatus,
         resolved_by: Optional[str] = None,
-    ) -> Optional[PendingApproval]:
-        """Marks an approval as APPROVED, REJECTED, or DISMISSED."""
+        user_id: Optional[str] = None,
+        user_name: Optional[str] = None,
+        user_roles: Optional[List[str]] = None,
+        enforce_authorization: bool = True,
+    ) -> Tuple[Optional[PendingApproval], bool, str]:
+        """Marks an approval with strict authorization enforcement.
+        
+        Returns:
+            (approval_obj, is_authorized, explanation_or_error)
+        """
         appr = self.get_approval(approval_id)
         if not appr:
             logger.warning("Approval %s not found in store", approval_id)
-            return None
+            return None, False, f"Approval '{approval_id}' not found."
+
+        actor_id = user_id or resolved_by
+        actor_name = user_name or resolved_by
+
+        if enforce_authorization:
+            is_auth, auth_reason = appr.is_user_authorized(
+                user_id=actor_id,
+                user_name=actor_name,
+                user_roles=user_roles
+            )
+            if not is_auth:
+                logger.warning("🚨 [ApprovalStore] BLOCKED unauthorized resolution on %s: %s", approval_id, auth_reason)
+                return appr, False, auth_reason
 
         appr.status = status
         appr.resolved_at = time.time()
-        appr.resolved_by = resolved_by
+        appr.resolved_by = actor_name or actor_id or "authorized_user"
         self._save()
 
-        logger.info("✅ [ApprovalStore] Resolved approval %s -> %s by %s", approval_id, status.value, resolved_by)
-        return appr
+        logger.info("✅ [ApprovalStore] Resolved approval %s -> %s by %s", approval_id, status.value, appr.resolved_by)
+        return appr, True, "Authorized"
 
     def list_pending(self, room_id: Optional[str] = None) -> List[PendingApproval]:
         """Lists all pending approvals, optionally filtered by room."""

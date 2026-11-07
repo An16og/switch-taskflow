@@ -1,4 +1,4 @@
-"""Unit tests for PendingApprovalStore and lightweight Slack button payloads."""
+"""Unit tests for PendingApprovalStore, authorization bindings, and lightweight Slack button payloads."""
 
 import json
 import os
@@ -14,8 +14,10 @@ from slack_cards import (
     build_human_todo_card,
     build_assigner_card,
     build_approval_resolution_card,
+    build_unauthorized_action_card,
     parse_button_payload
 )
+from interactions import InteractionDispatcher
 
 
 class TestPendingApprovalStore(unittest.TestCase):
@@ -23,6 +25,7 @@ class TestPendingApprovalStore(unittest.TestCase):
         self.test_dir = tempfile.mkdtemp()
         self.store_file = Path(self.test_dir) / "test_approvals.json"
         self.store = PendingApprovalStore(storage_path=str(self.store_file), ttl_seconds=3600.0)
+        self.dispatcher = InteractionDispatcher(approval_store=self.store)
 
     def tearDown(self):
         shutil.rmtree(self.test_dir, ignore_errors=True)
@@ -83,14 +86,16 @@ class TestPendingApprovalStore(unittest.TestCase):
         appr = self.store.create_approval(
             action_summary="Deploy staging",
             artifact_content="git checkout main && docker compose up",
+            assigner_id="U_MANAGER"
         )
         self.assertEqual(appr.status, ApprovalStatus.PENDING)
 
-        resolved = self.store.resolve_approval(
+        resolved, is_auth, _ = self.store.resolve_approval(
             approval_id=appr.approval_id,
             status=ApprovalStatus.APPROVED,
-            resolved_by="U_MANAGER"
+            user_id="U_MANAGER"
         )
+        self.assertTrue(is_auth)
         self.assertEqual(resolved.status, ApprovalStatus.APPROVED)
         self.assertEqual(resolved.resolved_by, "U_MANAGER")
         self.assertIsNotNone(resolved.resolved_at)
@@ -116,13 +121,19 @@ class TestPendingApprovalStore(unittest.TestCase):
         self.assertEqual(fetched.status, ApprovalStatus.EXPIRED)
 
     def test_human_todo_and_assigner_cards(self):
-        """Verify human_todo and assigner cards generate lightweight button payloads."""
+        """Verify human_todo and assigner cards generate lightweight button payloads and auth badges."""
         human_blocks = build_human_todo_card(
             action_summary="Review PR #42",
             assigner_id="U100",
+            assignee_id="U200",
             action_plan="1. Check migrations\n2. Run load tests",
             store=self.store
         )
+        # Verify context badge displays authorized users
+        context_block = next(b for b in human_blocks if b.get("type") == "context")
+        auth_elem = next(e for e in context_block["elements"] if "Authorized" in e["text"])
+        self.assertIn("<@U200>", auth_elem["text"])
+
         action_block = next(b for b in human_blocks if b.get("type") == "actions")
         for btn in action_block["elements"]:
             self.assertLess(len(btn["value"]), 100)
@@ -133,11 +144,112 @@ class TestPendingApprovalStore(unittest.TestCase):
             action_summary="Prepare demo deck",
             target_assignee="Sarah",
             target_assignee_id="U200",
+            assigner_id="U100",
             store=self.store
         )
         action_block_2 = next(b for b in assigner_blocks if b.get("type") == "actions")
         for btn in action_block_2["elements"]:
             self.assertLess(len(btn["value"]), 100)
+
+    def test_unauthorized_button_click_blocked(self):
+        """Verify unauthorized users cannot approve tasks and receive refusal card."""
+        # Task assigned to Alice by Priya
+        appr = self.store.create_approval(
+            action_summary="Draft v1.3 Release Notes",
+            artifact_content="# Release Notes v1.3...",
+            assigner_id="U_PRIYA",
+            assigner_name="Priya",
+            assignee_id="U_ALICE",
+            assignee_name="Alice",
+            allowed_roles=["owner", "admin"]
+        )
+
+        # Unauthorized user Bob clicks "Approve & Post to Channel"
+        bob_payload = {
+            "user": {"id": "U_BOB", "username": "bob"},
+            "actions": [
+                {
+                    "action_id": "btn_approve_auto_execute",
+                    "value": json.dumps({"approval_id": appr.approval_id, "action": "approve"})
+                }
+            ]
+        }
+
+        result = self.dispatcher.handle_interaction(bob_payload, user_roles=[])
+        self.assertFalse(result["authorized"])
+        self.assertFalse(result["success"])
+        self.assertEqual(result["status"], "UNAUTHORIZED")
+        self.assertIn("bob is not permitted", result["reason"])
+
+        # Check refusal card format
+        blocks = result["blocks"]
+        self.assertIn("⚠️ Action Refused: Unauthorized", blocks[0]["text"]["text"])
+        self.assertIn("<@U_BOB>", blocks[1]["text"]["text"])
+
+        # Confirm approval remains in PENDING state in storage
+        unaltered_appr = self.store.get_approval(appr.approval_id)
+        self.assertEqual(unaltered_appr.status, ApprovalStatus.PENDING)
+
+    def test_authorized_assignee_click_succeeds(self):
+        """Verify designated assignee can approve and execute task."""
+        appr = self.store.create_approval(
+            action_summary="Review database migrations",
+            artifact_content="1. Check indexes\n2. Test rollback",
+            assignee_id="U_ALICE",
+            assignee_name="Alice",
+            assigner_id="U_PRIYA",
+            assigner_name="Priya"
+        )
+
+        alice_payload = {
+            "user": {"id": "U_ALICE", "username": "alice"},
+            "actions": [
+                {
+                    "action_id": "btn_accept_task",
+                    "value": json.dumps({"approval_id": appr.approval_id, "action": "accept"})
+                }
+            ]
+        }
+
+        result = self.dispatcher.handle_interaction(alice_payload)
+        self.assertTrue(result["authorized"])
+        self.assertTrue(result["success"])
+        self.assertEqual(result["status"], "APPROVED")
+
+        # Confirm approval is APPROVED by Alice
+        updated = self.store.get_approval(appr.approval_id)
+        self.assertEqual(updated.status, ApprovalStatus.APPROVED)
+        self.assertEqual(updated.resolved_by, "alice")
+
+    def test_authorized_room_role_click_succeeds(self):
+        """Verify user with room role (e.g. admin or lead) can approve on behalf of team."""
+        appr = self.store.create_approval(
+            action_summary="Urgent hotfix approval",
+            artifact_content="Deploy auth patch",
+            assignee_id="U_ALICE",
+            allowed_roles=["admin", "lead", "owner"]
+        )
+
+        # Charlie is not Alice, but holds the "admin" role in the room
+        charlie_payload = {
+            "user": {"id": "U_CHARLIE", "username": "charlie"},
+            "actions": [
+                {
+                    "action_id": "btn_approve_auto_execute",
+                    "value": json.dumps({"approval_id": appr.approval_id, "action": "approve"})
+                }
+            ]
+        }
+
+        result = self.dispatcher.handle_interaction(charlie_payload, user_roles=["admin"])
+        self.assertTrue(result["authorized"])
+        self.assertTrue(result["success"])
+        self.assertEqual(result["status"], "APPROVED")
+
+        # Confirm resolved
+        updated = self.store.get_approval(appr.approval_id)
+        self.assertEqual(updated.status, ApprovalStatus.APPROVED)
+        self.assertEqual(updated.resolved_by, "charlie")
 
     def test_approval_resolution_card(self):
         """Verify approval resolution replacement card structure."""

@@ -439,3 +439,51 @@ class SwitchAgentClient:
         except Exception as e:
             logger.error("Failed to read context: %s", e)
             return []
+
+    def get_user_roles(
+        self,
+        user_id: Optional[str] = None,
+        user_name: Optional[str] = None,
+        room_id: Optional[str] = None,
+    ) -> List[str]:
+        """Resolves active room roles held by a user in the Switch room.
+        
+        Checks:
+        1. Role definitions and live leases in the room (`held_by`).
+        2. Room creator / owner status via `get_room_detail`.
+        """
+        target_room = room_id or self.room_id
+        roles: List[str] = []
+        clean_user = (user_name or "").strip().lower().lstrip("@")
+        clean_id = (user_id or "").strip().lower()
+
+        if not target_room or not self.agent_id:
+            return roles
+
+        try:
+            resp = requests.post(
+                f"{self.server_url}/agents/{self.agent_id}/ops/get_room_detail",
+                headers=self.auth_headers,
+                json={"room_id": target_room},
+                timeout=5,
+            )
+            if resp.status_code == 200:
+                result = resp.json().get("result", {})
+                room_roles = result.get("roles", [])
+                for r in room_roles:
+                    r_name = r.get("name", "").lower()
+                    for holder in r.get("held_by", []):
+                        holder_name = (holder.get("name") or "").strip().lower().lstrip("@")
+                        if holder_name and holder_name in (clean_user, clean_id):
+                            if r_name not in roles:
+                                roles.append(r_name)
+
+                creator = (result.get("creator_name") or result.get("owner_name") or "").strip().lower().lstrip("@")
+                if creator and creator in (clean_user, clean_id):
+                    for admin_role in ("owner", "admin", "operator"):
+                        if admin_role not in roles:
+                            roles.append(admin_role)
+        except Exception as e:
+            logger.debug("Failed querying room roles for %s: %s", user_name or user_id, e)
+
+        return roles
