@@ -39,6 +39,7 @@ from models import (
     format_deadline_with_timezone,
     extract_thread_id,
     should_skip_agent_message,
+    build_todoist_payload,
 )
 from llm_gateway import LLMGateway
 from agents.triage_agent import TriageAgent
@@ -372,7 +373,7 @@ def parse_approval_command(body: str, addressed: bool = False) -> Optional[Tuple
 
     # Pattern 1: Explicit mention of @taskflow-worker with command
     m = re.search(
-        r"@?taskflow-worker\b.*?\b(approve|dismiss|reject|confirm|accept)\s+(appr_[a-f0-9]+)",
+        r"@?taskflow-worker\b.*?\b(approve|dismiss|reject|confirm|accept|save|save_to_todoist)\s+(appr_[a-f0-9]+)",
         clean_body,
         re.IGNORECASE
     )
@@ -383,12 +384,14 @@ def parse_approval_command(body: str, addressed: bool = False) -> Optional[Tuple
             action = "dismiss"
         elif action == "accept":
             action = "confirm"
+        elif action == "save_to_todoist":
+            action = "save"
         return action, appr_id
 
     # Pattern 2: Directly addressed to worker or command syntax starting with command
-    if addressed or clean_body.lower().startswith(("approve appr_", "dismiss appr_", "reject appr_", "confirm appr_", "accept appr_")):
+    if addressed or clean_body.lower().startswith(("approve appr_", "dismiss appr_", "reject appr_", "confirm appr_", "accept appr_", "save appr_", "save_to_todoist appr_")):
         m2 = re.search(
-            r"\b(approve|dismiss|reject|confirm|accept)\s+(appr_[a-f0-9]+)",
+            r"\b(approve|dismiss|reject|confirm|accept|save|save_to_todoist)\s+(appr_[a-f0-9]+)",
             clean_body,
             re.IGNORECASE
         )
@@ -399,6 +402,8 @@ def parse_approval_command(body: str, addressed: bool = False) -> Optional[Tuple
                 action = "dismiss"
             elif action == "accept":
                 action = "confirm"
+            elif action == "save_to_todoist":
+                action = "save"
             return action, appr_id
 
     return None
@@ -496,11 +501,12 @@ async def handle_worker_message(client: SwitchAgentClient, payload: Dict[str, An
             logger.info("❌ [Worker] Dismissed approval %s by @%s", approval_id, sender_name)
             return
 
-        # If success and action was approve or confirm
+        # If success and action was approve, confirm, or save
         appr_obj = res.get("approval")
+        is_save = action in ("save", "save_to_todoist")
         is_assignment = getattr(appr_obj, "action_type", "") in ("ASSIGNMENT", "HUMAN_TODO") or action in ("confirm", "accept")
 
-        if is_assignment and appr_obj:
+        if (is_assignment or is_save) and appr_obj:
             task_id_line = f"• **Task ID:** `{res.get('task_id')}`\n" if res.get('task_id') else ""
             todoist_url = res.get('todoist_url')
             todoist_error = res.get('todoist_error')
@@ -511,15 +517,23 @@ async def handle_worker_message(client: SwitchAgentClient, payload: Dict[str, An
             else:
                 sync_line = "• **External Sync:** Native room only\n"
 
+            if is_save:
+                header = "💾 **Deliverable Saved to Workroom & Todoist**"
+                footer = f"*(Saved by @{sender_name} to Todoist)*"
+                role_line = f"• **Author / Owner:** @{appr_obj.assignee_name or sender_name}\n• **Saved by:** @{sender_name}\n"
+            else:
+                header = "🎯 **Task Confirmed & Assigned**"
+                footer = f"*(Confirmed by @{sender_name}; action checklist forwarded to @{appr_obj.assignee_name})*"
+                role_line = f"• **Assignee:** @{appr_obj.assignee_name}\n• **Assigned by:** @{sender_name}\n"
+
             confirm_receipt = (
-                f"🎯 **Task Confirmed & Assigned**\n\n"
+                f"{header}\n\n"
                 f"• **Task:** {appr_obj.action_summary}\n"
-                f"• **Assignee:** @{appr_obj.assignee_name}\n"
-                f"• **Assigned by:** @{sender_name}\n"
+                f"{role_line}"
                 f"• **Due Date:** {format_deadline_with_timezone(appr_obj.deadline) or 'Not specified'}\n"
                 f"{task_id_line}"
                 f"{sync_line}\n"
-                f"*(Confirmed by @{sender_name}; action checklist forwarded to @{appr_obj.assignee_name})*"
+                f"{footer}"
             )
             confirm_target_thread = appr_obj.message_ts or thread_id
             await asyncio.to_thread(
@@ -700,6 +714,7 @@ async def handle_worker_message(client: SwitchAgentClient, payload: Dict[str, An
             f"• **Status:** `PENDING_APPROVAL`\n\n"
             f"📝 **Preview:**\n> {preview_text}\n\n"
             f"👉 **To approve & publish to room:**\n`@taskflow-worker approve {approval.approval_id}`\n\n"
+            f"👉 **To save to Todoist:**\n`@taskflow-worker save {approval.approval_id}`\n\n"
             f"👉 **To dismiss:**\n`@taskflow-worker dismiss {approval.approval_id}`\n\n"
             f"*(Approval locked to @{handoff.assignee_name}, @{handoff.assigner_name}, or room role holders)*"
         )
@@ -794,19 +809,21 @@ async def handle_worker_message(client: SwitchAgentClient, payload: Dict[str, An
             thread_id=handoff.thread_id,
         )
 
-        task_description = (
-            f"Assigned by: @{handoff.assigner_name}\n"
-            f"Context: {handoff.context_notes or 'Captured via TaskFlow on Switch'}\n\n"
-            f"Action Plan Checklist:\n{worker_result.artifact_content}"
+        todo_payload = build_todoist_payload(
+            title=handoff.task_title,
+            assignee_name=handoff.assignee_name,
+            assigner_name=handoff.assigner_name,
+            context_notes=handoff.context_notes,
+            content_body=worker_result.artifact_content,
+            deadline=handoff.deadline,
+            external_id=room_task.task_id,
+            execution_type=handoff.execution_type.value if hasattr(handoff.execution_type, "value") else str(handoff.execution_type),
         )
 
         # 2. Optional Todoist Sync with 4xx diagnostics and idempotency
         sync_res = await asyncio.to_thread(
             todoist.sync_task,
-            content=f"[{handoff.assignee_name}] {handoff.task_title}",
-            description=task_description,
-            due_string=handoff.deadline,
-            external_id=room_task.task_id,
+            **todo_payload,
         )
 
         task_url = sync_res.task_url if sync_res.success else None

@@ -28,7 +28,7 @@ from config import (
     SWITCH_WORKER_AGENT_API_KEY,
     TODOIST_API_TOKEN,
 )
-from models import SlackMessage, TaskTriageResult, ExecutionType, WorkerExecutionResult, should_skip_agent_message
+from models import SlackMessage, TaskTriageResult, ExecutionType, WorkerExecutionResult, should_skip_agent_message, build_todoist_payload
 from switch_client import SwitchAgentClient
 from agents.triage_agent import TriageAgent
 from agents.worker_agent import WorkerAgent
@@ -311,12 +311,17 @@ class ChannelTriageJob:
                 if not dry_run and self.todoist_client:
                     if hasattr(self.todoist_client, "create_task"):
                         try:
-                            todoist_task = self.todoist_client.create_task(
-                                content=res.action_summary,
-                                description=exec_result.artifact_content,
-                                due_string=res.deadline,
+                            todo_payload = build_todoist_payload(
+                                title=res.action_summary,
+                                assignee_name=assignee,
+                                assigner_name=requester,
+                                context_notes=res.context_notes,
+                                content_body=exec_result.artifact_content,
+                                deadline=res.deadline,
                                 external_id=room_task.task_id,
+                                execution_type="HUMAN_TODO",
                             )
+                            todoist_task = self.todoist_client.create_task(**todo_payload)
                             if todoist_task:
                                 if isinstance(todoist_task, dict):
                                     task_url = todoist_task.get("url")

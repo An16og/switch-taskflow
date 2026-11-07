@@ -84,7 +84,7 @@ def build_auto_execute_card(
         display_content = display_content[:2500] + "\n\n*(Preview truncated for Slack display - full content saved in store)*"
 
     btn_approve_val = json.dumps({"approval_id": approval_id, "action": "approve"})
-    btn_todoist_val = json.dumps({"approval_id": approval_id, "action": "accept"})
+    btn_todoist_val = json.dumps({"approval_id": approval_id, "action": "save"})
     btn_dismiss_val = json.dumps({"approval_id": approval_id, "action": "dismiss"})
 
     blocks = [
@@ -527,7 +527,9 @@ def build_approval_resolution_card(
     status_upper = status.upper()
     actor_display = f"<@{resolved_by}>" if (resolved_by.startswith("U") or resolved_by.startswith("W")) else f"@{resolved_by.lstrip('@')}"
 
-    if status_upper in ("APPROVED", "CONFIRM", "ACCEPT"):
+    if status_upper in ("SAVE", "SAVED"):
+        status_text = f"💾 *Deliverable Saved to Todoist & Workroom by {actor_display}*"
+    elif status_upper in ("APPROVED", "CONFIRM", "ACCEPT"):
         status_text = f"✅ *Task Approved & Executed by {actor_display}*"
     elif status_upper in ("REJECTED", "DISMISSED", "DISMISS"):
         status_text = f"❌ *Dismissed by {actor_display}*"

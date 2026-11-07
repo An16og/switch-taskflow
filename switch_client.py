@@ -1142,7 +1142,13 @@ class SwitchAgentClient:
                 logger.debug("Server update_room_document call failed/skipped: %s", e)
 
         status_val = (metadata or {}).get("status")
-        updated_by = (metadata or {}).get("approved_by") or (metadata or {}).get("dismissed_by") or self.agent_name
+        updated_by = (
+            (metadata or {}).get("approved_by")
+            or (metadata or {}).get("saved_by")
+            or (metadata or {}).get("dismissed_by")
+            or (metadata or {}).get("updated_by")
+            or self.agent_name
+        )
         doc = self.document_store.update_document(
             doc_id=target_id,
             content=content,

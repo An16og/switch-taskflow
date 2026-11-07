@@ -37,6 +37,50 @@ def format_deadline_with_timezone(deadline: Optional[str], tz: Optional[str] = N
         return f"{cleaned} ({tz_val})"
     return cleaned
 
+def build_todoist_payload(
+    title: str,
+    assignee_name: Optional[str] = None,
+    assigner_name: Optional[str] = None,
+    context_notes: Optional[str] = None,
+    content_body: Optional[str] = None,
+    deadline: Optional[str] = None,
+    external_id: Optional[str] = None,
+    execution_type: str = "HUMAN_TODO",
+) -> Dict[str, Any]:
+    """Builds a normalized Todoist task payload ensuring AUTO_EXECUTE and HUMAN_TODO
+    share the exact same schema, idempotency external_id, and metadata formatting.
+    
+    Schema fields:
+    - content: '[Assignee] Task Title'
+    - description: Multi-line description with assigner, context notes, and body
+    - due_string: Natural language deadline with anchored timezone
+    - external_id: Deterministic deduplication & idempotency key
+    """
+    clean_assignee = (assignee_name or "").strip().lstrip("@") or "Team"
+    clean_title = (title or "").strip() or "Untitled Task"
+    content = f"[{clean_assignee}] {clean_title}"
+
+    clean_assigner = (assigner_name or "").strip().lstrip("@") or "Team Member"
+    clean_context = (context_notes or "").strip() or "Captured via TaskFlow on Switch"
+
+    is_auto = str(execution_type).upper() == "AUTO_EXECUTE"
+    section_label = "Draft Deliverable" if is_auto else "Action Plan Checklist"
+
+    body_text = (content_body or "").strip()
+    description = (
+        f"Assigned by: @{clean_assigner}\n"
+        f"Context: {clean_context}\n\n"
+        f"{section_label}:\n"
+        f"{body_text}"
+    )
+
+    return {
+        "content": content,
+        "description": description,
+        "due_string": deadline,
+        "external_id": external_id,
+    }
+
 def extract_thread_id(payload: Dict[str, Any]) -> Optional[str]:
     """Resolves the source thread identifier across Switch and Slack schemas.
     
