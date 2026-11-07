@@ -3,6 +3,7 @@ import os
 import re
 import json
 import time
+import signal
 import asyncio
 import logging
 from collections import defaultdict, deque
@@ -897,6 +898,23 @@ async def main():
     else:
         logger.warning("⚠️ [Startup Probe] LLM Probe Warning: %s", probe_msg)
 
+    # Register signal handlers for graceful WebSocket close and task cleanup
+    shutdown_event = asyncio.Event()
+
+    def _trigger_shutdown():
+        logger.info("🛑 [Signal] Termination requested; initiating graceful multi-agent shutdown...")
+        shutdown_event.set()
+
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        try:
+            loop.add_signal_handler(sig, _trigger_shutdown)
+        except (NotImplementedError, AttributeError):
+            try:
+                signal.signal(sig, lambda s, f: _trigger_shutdown())
+            except Exception:
+                pass
+
     if args.agent == "triage":
         logger.info("Starting TaskFlow Triage Agent...")
         triage = await run_triage_agent()
@@ -906,7 +924,18 @@ async def main():
             logger.info("📋 [Switch Room] Applied ROOM_BRIEFING.md on connect via update_room_instructions")
         except Exception as e:
             logger.debug("Could not apply ROOM_BRIEFING.md on startup: %s", e)
-        await triage.connect_and_listen()
+        triage_task = asyncio.create_task(triage.connect_and_listen())
+        shutdown_waiter = asyncio.create_task(shutdown_event.wait())
+        done, pending = await asyncio.wait(
+            [triage_task, shutdown_waiter],
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        logger.info("🛑 [Graceful Shutdown] Closing triage WebSocket connection...")
+        await triage.close(code=1000, reason="Process shutdown")
+        for task in (triage_task, shutdown_waiter):
+            if not task.done():
+                task.cancel()
+        logger.info("TaskFlow triage agent shut down gracefully.")
     elif args.agent == "worker":
         logger.info("Starting TaskFlow Worker Agent...")
         worker = await run_worker_agent()
@@ -916,7 +945,18 @@ async def main():
             logger.info("📋 [Switch Room] Applied ROOM_BRIEFING.md on connect via update_room_instructions")
         except Exception as e:
             logger.debug("Could not apply ROOM_BRIEFING.md on startup: %s", e)
-        await worker.connect_and_listen()
+        worker_task = asyncio.create_task(worker.connect_and_listen())
+        shutdown_waiter = asyncio.create_task(shutdown_event.wait())
+        done, pending = await asyncio.wait(
+            [worker_task, shutdown_waiter],
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        logger.info("🛑 [Graceful Shutdown] Closing worker WebSocket connection...")
+        await worker.close(code=1000, reason="Process shutdown")
+        for task in (worker_task, shutdown_waiter):
+            if not task.done():
+                task.cancel()
+        logger.info("TaskFlow worker agent shut down gracefully.")
     else:
         logger.info("Starting BOTH TaskFlow Triage and Worker Agents on Switch...")
         triage = await run_triage_agent()
@@ -966,10 +1006,25 @@ async def main():
         except Exception as e:
             logger.debug("Could not resolve bridge info on startup: %s", e)
 
-        await asyncio.gather(
-            triage.connect_and_listen(),
-            worker.connect_and_listen()
+        triage_task = asyncio.create_task(triage.connect_and_listen())
+        worker_task = asyncio.create_task(worker.connect_and_listen())
+        shutdown_waiter = asyncio.create_task(shutdown_event.wait())
+
+        done, pending = await asyncio.wait(
+            [triage_task, worker_task, shutdown_waiter],
+            return_when=asyncio.FIRST_COMPLETED,
         )
+
+        logger.info("🛑 [Graceful Shutdown] Closing multi-agent WebSocket connections...")
+        await asyncio.gather(
+            triage.close(code=1000, reason="Process shutdown"),
+            worker.close(code=1000, reason="Process shutdown"),
+            return_exceptions=True,
+        )
+        for task in (triage_task, worker_task, shutdown_waiter):
+            if not task.done():
+                task.cancel()
+        logger.info("TaskFlow multi-agent daemon shut down gracefully.")
 
 if __name__ == "__main__":
     try:

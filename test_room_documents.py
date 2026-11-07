@@ -671,6 +671,111 @@ class TestRoomDocuments(unittest.TestCase):
         # Verify instructions mention running bot.py
         self.assertIn("python bot.py", content)
 
+    def test_process_health_log_metrics(self):
+        """Verifies log_process_health returns structured metrics and emits process health log line."""
+        client = SwitchAgentClient(
+            server_url="http://127.0.0.1:52422",
+            agent_id="test_health_agent",
+            agent_name="taskflow-worker",
+            room_id="room_health_test",
+            connection_id="conn-12345",
+        )
+        client.cursor = 42
+        client.generation = 999
+        client._connected_at = 1000.0
+        client._pings_received = 5
+        client._pongs_sent = 5
+        client._messages_processed = 12
+
+        with patch("time.time", return_value=1050.0):
+            with self.assertLogs("SwitchClient", level="INFO") as log_capture:
+                health = client.log_process_health()
+
+        self.assertEqual(health["agent_name"], "taskflow-worker")
+        self.assertEqual(health["cursor"], 42)
+        self.assertEqual(health["generation"], 999)
+        self.assertEqual(health["uptime_seconds"], 50.0)
+        self.assertEqual(health["pongs_sent"], 5)
+        self.assertEqual(health["messages_processed"], 12)
+        self.assertTrue(any("[Process Health]" in record for record in log_capture.output))
+
+    def test_graceful_ws_close_sends_code_and_reason(self):
+        """Verifies graceful WS close invokes ws.close with code 1000 and custom reason."""
+        client = SwitchAgentClient(
+            server_url="http://127.0.0.1:52422",
+            agent_id="test_close_agent",
+            agent_name="taskflow-triage",
+        )
+        client._running = True
+
+        mock_ws = MagicMock()
+        mock_ws.closed = False
+        close_called = {}
+
+        async def mock_close(code=1000, reason=""):
+            close_called["code"] = code
+            close_called["reason"] = reason
+
+        mock_ws.close = mock_close
+        client._ws = mock_ws
+
+        asyncio.run(client.close(code=1000, reason="Daemon shutdown"))
+
+        self.assertFalse(client._running)
+        self.assertIsNone(client._ws)
+        self.assertEqual(close_called.get("code"), 1000)
+        self.assertEqual(close_called.get("reason"), "Daemon shutdown")
+
+    def test_heartbeat_pong_increments_metrics_and_logs(self):
+        """Verifies receiving ping answers pong, increments metrics, and logs heartbeat at INFO level."""
+        stable_id = str(uuid.uuid4())
+        client = SwitchAgentClient(
+            server_url="http://127.0.0.1:52422",
+            agent_id="test_heartbeat_agent",
+            agent_name="taskflow-triage",
+            connection_id=stable_id,
+        )
+        client.register_or_validate = MagicMock(return_value=True)
+        client.ensure_room = MagicMock(return_value="room_hb_test")
+
+        sent_messages = []
+
+        class MockPingWs:
+            def __init__(self):
+                self.messages = [
+                    json.dumps({"event": "ping", "data": {}}),
+                ]
+                self.idx = 0
+                self.closed = False
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc_val, exc_tb):
+                pass
+
+            async def recv(self):
+                if self.idx < len(self.messages):
+                    msg = self.messages[self.idx]
+                    self.idx += 1
+                    return msg
+                client.stop()
+                raise websockets.exceptions.ConnectionClosed(None, None)
+
+            async def send(self, data):
+                sent_messages.append(json.loads(data))
+
+            async def close(self, code=1000, reason=""):
+                self.closed = True
+
+        with patch("websockets.connect", return_value=MockPingWs()):
+            with self.assertLogs("SwitchClient", level="INFO") as log_capture:
+                asyncio.run(client.connect_and_listen(apply_briefing=False, auto_reconnect=False))
+
+        self.assertEqual(client._pings_received, 1)
+        self.assertEqual(client._pongs_sent, 1)
+        self.assertTrue(any("[Heartbeat]" in msg for msg in log_capture.output))
+
 
 if __name__ == "__main__":
     unittest.main()

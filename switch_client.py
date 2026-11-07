@@ -1,7 +1,9 @@
 import asyncio
 import json
 import logging
+import os
 import re
+import time
 import uuid
 from pathlib import Path
 from typing import Callable, Awaitable, Optional, Dict, Any, List
@@ -55,6 +57,14 @@ class SwitchAgentClient:
         self._running = False
         self._message_handlers: List[Callable[[Dict[str, Any]], Awaitable[None]]] = []
         self.document_store: RoomDocumentStore = default_room_document_store
+
+        # Process health & heartbeat metrics
+        self._connected_at: Optional[float] = None
+        self._pings_received: int = 0
+        self._pongs_sent: int = 0
+        self._messages_processed: int = 0
+        self._health_task: Optional[asyncio.Task] = None
+        self._health_interval: float = 30.0
 
     @property
     def auth_headers(self) -> Dict[str, str]:
@@ -219,136 +229,164 @@ class SwitchAgentClient:
         self._running = True
         current_delay = reconnect_delay
 
-        while self._running:
-            # Reconnect with stable connection_id, generation, and cursor
-            query_params = [
-                f"connection_id={self.connection_id}",
-                f"rooms={self.room_id}",
-            ]
-            if self.generation is not None:
-                query_params.append(f"expected_generation={self.generation}")
-            if self.cursor > 0:
-                query_params.append(f"start_at={self.cursor}")
+        try:
+            while self._running:
+                # Reconnect with stable connection_id, generation, and cursor
+                query_params = [
+                    f"connection_id={self.connection_id}",
+                    f"rooms={self.room_id}",
+                ]
+                if self.generation is not None:
+                    query_params.append(f"expected_generation={self.generation}")
+                if self.cursor > 0:
+                    query_params.append(f"start_at={self.cursor}")
 
-            ws_url = f"{self.ws_base_url}/agents/{self.agent_id}/connection/ws?{'&'.join(query_params)}"
-            logger.info("Opening Switch WebSocket connection: %s", ws_url)
-            headers = {"Authorization": f"Bearer {self.api_key}"}
+                ws_url = f"{self.ws_base_url}/agents/{self.agent_id}/connection/ws?{'&'.join(query_params)}"
+                logger.info("Opening Switch WebSocket connection: %s", ws_url)
+                headers = {"Authorization": f"Bearer {self.api_key}"}
 
-            try:
                 try:
-                    ws_ctx = websockets.connect(ws_url, additional_headers=headers)
-                except TypeError:
-                    ws_ctx = websockets.connect(ws_url, extra_headers=headers)
+                    try:
+                        ws_ctx = websockets.connect(ws_url, additional_headers=headers)
+                    except TypeError:
+                        ws_ctx = websockets.connect(ws_url, extra_headers=headers)
 
-                async with ws_ctx as ws:
-                    self._ws = ws
-                    current_delay = reconnect_delay
-                    logger.info("Connected to Switch Server WebSocket! Connection ID: %s", self.connection_id)
-
-                    while self._running:
-                        try:
-                            raw_msg = await ws.recv()
-                        except websockets.exceptions.ConnectionClosed as e:
-                            logger.warning("Switch WebSocket closed: %s", e)
-                            break
+                    async with ws_ctx as ws:
+                        self._ws = ws
+                        self._connected_at = time.time()
+                        current_delay = reconnect_delay
+                        logger.info("Connected to Switch Server WebSocket! Connection ID: %s", self.connection_id)
+                        if not self._health_task or self._health_task.done():
+                            self._health_task = asyncio.create_task(self._run_health_logger())
 
                         try:
-                            frame = json.loads(raw_msg)
-                        except Exception:
-                            continue
-
-                        event = frame.get("event") or frame.get("type")
-                        data = frame.get("data") or frame.get("payload") or {}
-
-                        # Advance and track cursor from frame or data
-                        frame_cursor = frame.get("cursor") or frame.get("id")
-                        if not isinstance(frame_cursor, int) and isinstance(data, dict):
-                            frame_cursor = data.get("cursor")
-                        if isinstance(frame_cursor, int) and frame_cursor > self.cursor:
-                            self.cursor = frame_cursor
-
-                        # Switch liveness protocol: server sends ping, client MUST answer pong with cursor
-                        if event == "ping":
-                            pong_frame = {
-                                "type": "pong",
-                                "cursor": self.cursor,
-                            }
-                            if self.generation is not None:
-                                pong_frame["generation"] = self.generation
-                            await ws.send(json.dumps(pong_frame))
-                            logger.debug("Received ping, sent pong with cursor=%s (generation=%s).", self.cursor, self.generation)
-                            continue
-
-                        if event == "connection_state":
-                            # Server informs client of confirmed generation, cursor, and connection_id
-                            server_conn_id = data.get("connection_id") if isinstance(data, dict) else None
-                            if server_conn_id:
-                                self.connection_id = server_conn_id
-                            if isinstance(data, dict):
-                                if "generation" in data:
-                                    self.generation = data["generation"]
-                                if "cursor" in data and isinstance(data["cursor"], int):
-                                    self.cursor = max(self.cursor, data["cursor"])
-
-                            logger.info(
-                                "Connection confirmed by Switch Server: rooms=%s, generation=%s, cursor=%s",
-                                frame.get("rooms") or (data.get("rooms") if isinstance(data, dict) else None),
-                                self.generation,
-                                self.cursor,
-                            )
-                            if apply_briefing:
+                            while self._running:
                                 try:
-                                    self.apply_room_briefing(room_id=self.room_id)
-                                except Exception as e:
-                                    logger.debug("Could not re-apply room briefing on connection_state: %s", e)
-                            continue
+                                    raw_msg = await ws.recv()
+                                except websockets.exceptions.ConnectionClosed as e:
+                                    logger.warning("Switch WebSocket closed: %s", e)
+                                    break
 
-                        if event == "refused":
-                            logger.warning("Connection refused by Switch Server: %s", data)
-                            # Reset generation if stale incarnation was rejected
-                            self.generation = None
-                            break
+                                try:
+                                    frame = json.loads(raw_msg)
+                                except Exception:
+                                    continue
 
-                        if event == "message":
-                            # Switch message frames may nest payload under frame['data']['payload'] or frame['payload']
-                            raw_data = frame.get("data") if isinstance(frame.get("data"), dict) else frame
-                            if isinstance(raw_data.get("payload"), dict):
-                                inner_payload = raw_data["payload"]
-                            elif isinstance(frame.get("payload"), dict):
-                                inner_payload = frame["payload"]
-                            else:
-                                inner_payload = raw_data
+                                event = frame.get("event") or frame.get("type")
+                                data = frame.get("data") or frame.get("payload") or {}
 
-                            event_data = {
-                                "room_id": frame.get("room_id") or raw_data.get("room_id") or self.room_id,
-                                "channel_type": frame.get("channel_type") or raw_data.get("channel_type"),
-                                **inner_payload,
-                            }
-                            sender = event_data.get("sender_name") or event_data.get("sender")
-                            logger.info("Received room message: sender=%s, addressed=%s, body=%s", sender, event_data.get("addressed"), str(event_data.get("body", ""))[:40])
-                            for handler in self._message_handlers:
-                                asyncio.create_task(self._safe_invoke_handler(handler, event_data))
+                                # Advance and track cursor from frame or data
+                                frame_cursor = frame.get("cursor") or frame.get("id")
+                                if not isinstance(frame_cursor, int) and isinstance(data, dict):
+                                    frame_cursor = data.get("cursor")
+                                if isinstance(frame_cursor, int) and frame_cursor > self.cursor:
+                                    self.cursor = frame_cursor
 
-            except asyncio.CancelledError:
-                logger.info("Switch connection cancelled; stopping listener.")
-                break
-            except Exception as e:
-                if not self._running or not auto_reconnect:
-                    logger.warning("Switch WebSocket error (no reconnect): %s", e)
+                                # Switch liveness protocol: server sends ping, client MUST answer pong with cursor
+                                if event == "ping":
+                                    self._pings_received += 1
+                                    pong_frame = {
+                                        "type": "pong",
+                                        "cursor": self.cursor,
+                                    }
+                                    if self.generation is not None:
+                                        pong_frame["generation"] = self.generation
+                                    await ws.send(json.dumps(pong_frame))
+                                    self._pongs_sent += 1
+                                    logger.info(
+                                        "💓 [Heartbeat] Agent '%s' answered ping -> pong (cursor=%s, generation=%s, conn_id=%s)",
+                                        self.agent_name,
+                                        self.cursor,
+                                        self.generation,
+                                        self.connection_id,
+                                    )
+                                    continue
+
+                                if event == "connection_state":
+                                    # Server informs client of confirmed generation, cursor, and connection_id
+                                    server_conn_id = data.get("connection_id") if isinstance(data, dict) else None
+                                    if server_conn_id:
+                                        self.connection_id = server_conn_id
+                                    if isinstance(data, dict):
+                                        if "generation" in data:
+                                            self.generation = data["generation"]
+                                        if "cursor" in data and isinstance(data["cursor"], int):
+                                            self.cursor = max(self.cursor, data["cursor"])
+
+                                    logger.info(
+                                        "Connection confirmed by Switch Server: rooms=%s, generation=%s, cursor=%s",
+                                        frame.get("rooms") or (data.get("rooms") if isinstance(data, dict) else None),
+                                        self.generation,
+                                        self.cursor,
+                                    )
+                                    if apply_briefing:
+                                        try:
+                                            self.apply_room_briefing(room_id=self.room_id)
+                                        except Exception as e:
+                                            logger.debug("Could not re-apply room briefing on connection_state: %s", e)
+                                    continue
+
+                                if event == "refused":
+                                    logger.warning("Connection refused by Switch Server: %s", data)
+                                    # Reset generation if stale incarnation was rejected
+                                    self.generation = None
+                                    break
+
+                                if event == "message":
+                                    self._messages_processed += 1
+                                    # Switch message frames may nest payload under frame['data']['payload'] or frame['payload']
+                                    raw_data = frame.get("data") if isinstance(frame.get("data"), dict) else frame
+                                    if isinstance(raw_data.get("payload"), dict):
+                                        inner_payload = raw_data["payload"]
+                                    elif isinstance(frame.get("payload"), dict):
+                                        inner_payload = frame["payload"]
+                                    else:
+                                        inner_payload = raw_data
+
+                                    event_data = {
+                                        "room_id": frame.get("room_id") or raw_data.get("room_id") or self.room_id,
+                                        "channel_type": frame.get("channel_type") or raw_data.get("channel_type"),
+                                        **inner_payload,
+                                    }
+                                    sender = event_data.get("sender_name") or event_data.get("sender")
+                                    logger.info("Received room message: sender=%s, addressed=%s, body=%s", sender, event_data.get("addressed"), str(event_data.get("body", ""))[:40])
+                                    for handler in self._message_handlers:
+                                        asyncio.create_task(self._safe_invoke_handler(handler, event_data))
+                        finally:
+                            if self._health_task and not self._health_task.done():
+                                self._health_task.cancel()
+                                self._health_task = None
+
+                except asyncio.CancelledError:
+                    logger.info("Switch connection cancelled; stopping listener.")
                     break
-                logger.warning(
-                    "Switch WebSocket disconnected (%s). Reconnecting with stable connection_id=%s, generation=%s, cursor=%s in %.1fs...",
-                    e,
-                    self.connection_id,
-                    self.generation,
-                    self.cursor,
-                    current_delay,
-                )
-                await asyncio.sleep(current_delay)
-                current_delay = min(current_delay * 1.5, max_reconnect_delay)
+                except Exception as e:
+                    if not self._running or not auto_reconnect:
+                        logger.warning("Switch WebSocket error (no reconnect): %s", e)
+                        break
+                    logger.warning(
+                        "Switch WebSocket disconnected (%s). Reconnecting with stable connection_id=%s, generation=%s, cursor=%s in %.1fs...",
+                        e,
+                        self.connection_id,
+                        self.generation,
+                        self.cursor,
+                        current_delay,
+                    )
+                    await asyncio.sleep(current_delay)
+                    current_delay = min(current_delay * 1.5, max_reconnect_delay)
 
-            if not auto_reconnect or not self._running:
-                break
+                if not auto_reconnect or not self._running:
+                    break
+        finally:
+            if self._health_task and not self._health_task.done():
+                self._health_task.cancel()
+                self._health_task = None
+            if self._ws and not getattr(self._ws, "closed", False):
+                try:
+                    await self.close(code=1000, reason="Listener stopped")
+                    logger.info("🔌 [Graceful Close] WebSocket connection closed cleanly on listener exit.")
+                except Exception as e:
+                    logger.debug("Error closing WS on exit: %s", e)
 
     async def _safe_invoke_handler(self, handler: Callable[[Dict[str, Any]], Any], data: Dict[str, Any]):
         try:
@@ -358,15 +396,94 @@ class SwitchAgentClient:
         except Exception as ex:
             logger.error("Error in message handler: %s", ex, exc_info=True)
 
-    def stop(self):
-        self._running = False
-        if self._ws:
+    def log_process_health(self) -> Dict[str, Any]:
+        """Emits a structured process health and heartbeat log line and returns health metrics."""
+        uptime = time.time() - self._connected_at if self._connected_at else 0.0
+        ws_active = bool(self._ws and not getattr(self._ws, "closed", False))
+        state = {
+            "agent_name": self.agent_name,
+            "agent_id": self.agent_id,
+            "pid": os.getpid(),
+            "status": "CONNECTED" if ws_active else ("RECONNECTING" if self._running else "STOPPED"),
+            "room_id": self.room_id,
+            "cursor": self.cursor,
+            "generation": self.generation,
+            "connection_id": self.connection_id,
+            "uptime_seconds": round(uptime, 1),
+            "pings_received": self._pings_received,
+            "pongs_sent": self._pongs_sent,
+            "messages_processed": self._messages_processed,
+        }
+        logger.info(
+            "💚 [Process Health] Agent '%s' (PID %d) status=%s | room=%s | cursor=%s | generation=%s | uptime=%.0fs | pongs=%d | msgs=%d",
+            state["agent_name"],
+            state["pid"],
+            state["status"],
+            state["room_id"],
+            state["cursor"],
+            state["generation"],
+            state["uptime_seconds"],
+            state["pongs_sent"],
+            state["messages_processed"],
+        )
+        return state
+
+    async def _run_health_logger(self):
+        """Periodically emits process health and heartbeat log lines for observability."""
+        while self._running:
             try:
-                close_coro = self._ws.close()
-                if asyncio.iscoroutine(close_coro):
-                    asyncio.create_task(close_coro)
+                await asyncio.sleep(self._health_interval)
+                if self._running and self._ws and not getattr(self._ws, "closed", False):
+                    self.log_process_health()
+            except asyncio.CancelledError:
+                break
             except Exception as e:
-                logger.debug("Error closing websocket during stop: %s", e)
+                logger.debug("Error in health logger: %s", e)
+
+    async def close(self, code: int = 1000, reason: str = "Graceful shutdown"):
+        """Gracefully closes the WebSocket connection with status code and reason."""
+        self._running = False
+        if self._health_task and not self._health_task.done():
+            self._health_task.cancel()
+            try:
+                await self._health_task
+            except asyncio.CancelledError:
+                pass
+            self._health_task = None
+
+        if self._ws is not None:
+            try:
+                if not getattr(self._ws, "closed", False):
+                    logger.info(
+                        "🔌 [Graceful Close] Closing WebSocket for agent '%s' (code=%d, reason='%s')...",
+                        self.agent_name,
+                        code,
+                        reason,
+                    )
+                    try:
+                        await self._ws.close(code=code, reason=reason)
+                    except TypeError:
+                        await self._ws.close()
+                    logger.info("✅ [Graceful Close] WebSocket closed cleanly for agent '%s'.", self.agent_name)
+            except Exception as e:
+                logger.debug("Error during graceful WebSocket close for '%s': %s", self.agent_name, e)
+            finally:
+                self._ws = None
+
+    def stop(self):
+        """Signals the agent to stop listening and initiates graceful close."""
+        self._running = False
+        if self._health_task and not self._health_task.done():
+            self._health_task.cancel()
+        if self._ws and not getattr(self._ws, "closed", False):
+            try:
+                loop = asyncio.get_running_loop()
+                loop.create_task(self.close())
+            except RuntimeError:
+                try:
+                    asyncio.run(self.close())
+                except Exception as e:
+                    logger.debug("Error in stop() fallback close: %s", e)
 
     def invite_agent_to_room(self, agent_name: str, room_id: Optional[str] = None) -> bool:
         """Invites another Switch agent into the room by name."""
