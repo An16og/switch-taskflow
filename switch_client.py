@@ -177,12 +177,12 @@ class SwitchAgentClient:
         except Exception as e:
             logger.warning("Failed listing rooms: %s", e)
 
-        # Create new room if none found
+        # Create new room if none found (bridged by default so chat channel is enabled in Console)
         create_payload = {
             "name": "taskflow-workroom",
             "description": "Autonomous Task Triage & Workroom Worker",
             "agent_names": [self.agent_name],
-            "internal_only": True,
+            "channel_type": "channel_public",
         }
 
         logger.info("Creating default room for '%s'...", self.agent_name)
