@@ -33,7 +33,7 @@ from switch_client import SwitchAgentClient
 from agents.triage_agent import TriageAgent
 from agents.worker_agent import WorkerAgent
 from todoist_client import TodoistClient
-from security import sanitize_channel_text, detect_prompt_injection
+from security import sanitize_channel_text, detect_prompt_injection, validate_auto_post_safety
 from deduplication import TaskDeduplicator
 
 logging.basicConfig(
@@ -236,6 +236,24 @@ class ChannelTriageJob:
             if res.execution_type == ExecutionType.AUTO_EXECUTE:
                 logger.info("⚡ [AUTO_EXECUTE] Drafting deliverable: '%s'", res.action_summary)
                 exec_result: WorkerExecutionResult = self.worker_agent.execute_task(res, window)
+
+                # Mandatory Pre-Publication Safety Policy Gate
+                is_safe, violations, _ = validate_auto_post_safety(
+                    text=exec_result.artifact_content,
+                    artifact_title=res.action_summary,
+                    requester=requester
+                )
+                if not is_safe:
+                    logger.critical("🚨 [Security Policy] BLOCKED deliverable in Channel Triage Job: %s", violations)
+                    auto_executed.append({
+                        "title": res.action_summary,
+                        "category": res.execution_category,
+                        "requester": requester,
+                        "artifact_title": "Blocked by Security Policy",
+                        "content_preview": f"Suppressed due to security policy violations: {', '.join(violations)}",
+                        "status": "BLOCKED_SECURITY_POLICY"
+                    })
+                    continue
 
                 if not dry_run:
                     # Broadcast completed knowledge deliverable to room

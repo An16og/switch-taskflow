@@ -42,6 +42,7 @@ from agents.worker_agent import WorkerAgent
 from todoist_client import TodoistClient
 from switch_client import SwitchAgentClient
 from deduplication import TaskDeduplicator
+from security import validate_auto_post_safety, detect_prompt_injection
 
 # Configure logging
 logging.basicConfig(
@@ -105,6 +106,24 @@ async def handle_triage_message(client: SwitchAgentClient, payload: Dict[str, An
         return
 
     logger.info("👂 [Triage] Room message from %s (addressed=%s): %s", sender_name, addressed, body[:60])
+
+    # Security Guardrail: Check for prompt injection or rule override attempts
+    is_inj, inj_reason = detect_prompt_injection(body)
+    if is_inj:
+        logger.warning("🚨 [Triage] BLOCKED prompt injection from %s: %s", sender_name, inj_reason)
+        if is_addressed_to_us:
+            sec_reply = (
+                f"🛡️ @{sender_name} **[Security Policy Block]**\n"
+                f"Your request was flagged by the Switch Trust Guardrails policy for containing an adversarial instruction override or prompt injection signature: `{inj_reason}`."
+            )
+            await asyncio.to_thread(
+                client.send_targeted_message,
+                body=sec_reply,
+                target_names=[sender_name],
+                thread_id=thread_id,
+                room_id=room_id
+            )
+        return
 
     # Record message in the sliding context buffer
     msg_obj = SlackMessage(
@@ -325,6 +344,28 @@ async def handle_worker_message(client: SwitchAgentClient, payload: Dict[str, An
             triage_result,
             context_msgs
         )
+
+        # Mandatory Pre-Publication Safety Policy Gate (DLP / Anti-Exfil / Anti-Jailbreak)
+        is_safe, violations, _ = validate_auto_post_safety(
+            text=worker_result.artifact_content,
+            artifact_title=worker_result.artifact_title,
+            requester=handoff.requester_name
+        )
+        if not is_safe:
+            logger.critical("🚨 [Security Policy] BLOCKED AUTO-POST of deliverable '%s': %s", handoff.task_title, violations)
+            quarantine_notice = (
+                f"🛡️ **[TaskFlow Security Guardrail] Auto-Post Blocked**\n\n"
+                f"The autonomous worker drafted a deliverable for **'{handoff.task_title}'**, but it was **BLOCKED** by the Switch Trust Exfiltration & Safety Policy.\n"
+                f"• **Reason:** {', '.join(violations)}\n"
+                f"• **Action Taken:** Delivery suppressed to protect against prompt injection and secret exfiltration."
+            )
+            await asyncio.to_thread(
+                client.post_message,
+                body=quarantine_notice,
+                thread_id=handoff.thread_id,
+                room_id=handoff.room_id
+            )
+            return
 
         response_text = (
             f"{worker_result.artifact_content}\n\n"

@@ -14,6 +14,7 @@ from slack_cards import (
     build_unauthorized_action_card,
     build_approval_resolution_card
 )
+from security import validate_auto_post_safety
 
 logger = logging.getLogger("InteractionDispatcher")
 
@@ -172,6 +173,43 @@ class InteractionDispatcher:
         todoist_url = None
         if action_type in ("approve", "accept", "confirm"):
             target_status = ApprovalStatus.APPROVED
+
+            # Mandatory Pre-Publication Safety Policy Gate (DLP / Anti-Exfil)
+            is_safe, violations, _ = validate_auto_post_safety(
+                text=appr.artifact_content,
+                artifact_title=appr.artifact_title,
+                requester=user_name or user_id
+            )
+            if not is_safe:
+                logger.critical(
+                    "🚨 [InteractionDispatcher] BLOCKED publication of approval %s: %s",
+                    approval_id, violations
+                )
+                return {
+                    "success": False,
+                    "authorized": True,
+                    "status": "BLOCKED_SECURITY_POLICY",
+                    "reason": f"Publication blocked by security policy: {', '.join(violations)}",
+                    "blocks": [
+                        {
+                            "type": "header",
+                            "text": {"type": "plain_text", "text": "🛡️ Publication Blocked: Security Policy Violation", "emoji": True}
+                        },
+                        {
+                            "type": "section",
+                            "text": {
+                                "type": "mrkdwn",
+                                "text": (
+                                    f"This deliverable cannot be posted to the room because it triggered data loss prevention guardrails.\n\n"
+                                    f"• *Violations:* {', '.join(violations)}\n"
+                                    f"• *Action Taken:* Publication suppressed to protect sensitive credentials."
+                                )
+                            }
+                        }
+                    ],
+                    "approval": appr
+                }
+
             # Execute side effect: post to room/channel if AUTO_EXECUTE
             if auto_post_on_approval and action_type == "approve" and self.switch_client and hasattr(self.switch_client, "post_message"):
                 try:
