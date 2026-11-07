@@ -364,7 +364,10 @@ async def handle_worker_message(client: SwitchAgentClient, payload: Dict[str, An
         worker_result: WorkerExecutionResult = await asyncio.to_thread(
             worker_executor.execute_task,
             triage_result,
-            context_msgs
+            context_msgs,
+            None,
+            client,
+            room_id
         )
 
         # Mandatory Pre-Publication Safety Policy Gate (DLP / Anti-Exfil / Anti-Jailbreak)
@@ -410,7 +413,10 @@ async def handle_worker_message(client: SwitchAgentClient, payload: Dict[str, An
         worker_result: WorkerExecutionResult = await asyncio.to_thread(
             worker_executor.execute_task,
             triage_result,
-            context_msgs
+            context_msgs,
+            None,
+            client,
+            room_id
         )
 
         task_description = (
@@ -522,8 +528,14 @@ async def main():
         except Exception as e:
             logger.warning("Could not set addressing on startup: %s", e)
 
-        # Inspect if Switch has an active Slack collaboration bridge connected
+        # Attach default room references (GitHub repo & ticket tracker) on Switch
         active_room = SWITCH_ROOM_ID or triage.room_id
+        try:
+            worker.attach_default_room_references(active_room)
+        except Exception as e:
+            logger.debug("Could not attach default room references: %s", e)
+
+        # Inspect if Switch has an active Slack collaboration bridge connected
         try:
             bridge_info = triage.get_room_bridge_info(active_room)
             if bridge_info.get("is_slack"):

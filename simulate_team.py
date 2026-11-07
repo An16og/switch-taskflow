@@ -98,7 +98,7 @@ SCENARIOS = {
             SlackMessage(
                 user_id="U_ALEX_PM",
                 user_name="Alex (Product Manager)",
-                text="Can someone draft the v1.2 release notes highlighting our new Stripe webhook fix and dark mode?",
+                text="Can someone draft the v1.2 release notes highlighting our new Switch multi-agent architecture and Trust guardrails?",
                 ts=str(time.time())
             )
         ]
@@ -166,8 +166,13 @@ def run_simulation(choice: str):
         print("\n🤫 AMBIENT SILENCE: No task detected. Zero noise.")
         return
 
-    print("\n⚙️ 2. Agent 2 (Worker Agent) executing...")
-    worker_res = worker_agent.execute_task(triage, scenario["messages"])
+    print("\n⚙️ 2. Agent 2 (Worker Agent) executing with real repository, changelog & room context...")
+    worker_res = worker_agent.execute_task(
+        triage=triage,
+        context_messages=scenario["messages"],
+        switch_client=switch_client,
+        room_id=SWITCH_ROOM_ID
+    )
 
     if triage.execution_type == ExecutionType.AUTO_EXECUTE:
         print(f"   ⚡ Task Auto-Executed! Artifact: '{worker_res.artifact_title}'")

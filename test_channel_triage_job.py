@@ -111,7 +111,7 @@ class TestChannelTriageJob(unittest.TestCase):
         self.job.triage_agent.triage_conversation = MagicMock(side_effect=mock_triage_fn)
 
         # Mock WorkerAgent execution
-        def mock_worker_fn(triage_res, context):
+        def mock_worker_fn(triage_res, context, *args, **kwargs):
             if triage_res.execution_type == ExecutionType.AUTO_EXECUTE:
                 return WorkerExecutionResult(
                     artifact_title="Release Notes v1.3",

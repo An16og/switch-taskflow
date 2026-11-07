@@ -440,6 +440,134 @@ class SwitchAgentClient:
             logger.error("Failed to read context: %s", e)
             return []
 
+    def create_reference(
+        self,
+        ref_type: str,
+        name: str,
+        description: str,
+        instructions: str,
+        urls: List[str],
+    ) -> Dict[str, Any]:
+        """Creates an external reference (e.g. GitHub repo, Jira board, Confluence page) on Switch."""
+        if not self.agent_id:
+            return {}
+        payload = {
+            "type": ref_type,
+            "name": name,
+            "description": description,
+            "instructions": instructions,
+            "value": {"urls": urls},
+        }
+        try:
+            resp = requests.post(
+                f"{self.server_url}/agents/{self.agent_id}/ops/create_reference",
+                headers=self.auth_headers,
+                json=payload,
+                timeout=10,
+            )
+            if resp.status_code == 200:
+                logger.info("Created Switch reference '%s' (%s)", name, ref_type)
+                return resp.json().get("result", {})
+            logger.warning("create_reference failed [%s]: %s", resp.status_code, resp.text)
+        except Exception as e:
+            logger.warning("Error creating Switch reference: %s", e)
+        return {}
+
+    def attach_reference_to_room(
+        self,
+        reference_id: str,
+        room_id: Optional[str] = None,
+    ) -> bool:
+        """Attaches a created reference to the specified Switch room."""
+        target_room = room_id or self.room_id
+        if not self.agent_id or not target_room or not reference_id:
+            return False
+        payload = {
+            "room_id": target_room,
+            "reference_id": reference_id,
+        }
+        try:
+            resp = requests.post(
+                f"{self.server_url}/agents/{self.agent_id}/ops/attach_reference_to_room",
+                headers=self.auth_headers,
+                json=payload,
+                timeout=10,
+            )
+            if resp.status_code == 200:
+                logger.info("Attached reference '%s' to room '%s'", reference_id, target_room)
+                return True
+            logger.warning("attach_reference_to_room failed [%s]: %s", resp.status_code, resp.text)
+        except Exception as e:
+            logger.warning("Error attaching reference to room: %s", e)
+        return False
+
+    def list_all_references(self) -> List[Dict[str, Any]]:
+        """Lists all references registered by or visible to the agent on Switch."""
+        if not self.agent_id:
+            return []
+        try:
+            resp = requests.post(
+                f"{self.server_url}/agents/{self.agent_id}/ops/list_all_references",
+                headers=self.auth_headers,
+                json={},
+                timeout=5,
+            )
+            if resp.status_code == 200:
+                return resp.json().get("result", [])
+        except Exception as e:
+            logger.warning("Error querying list_all_references: %s", e)
+        return []
+
+    def attach_default_room_references(
+        self,
+        room_id: Optional[str] = None,
+        github_url: str = "https://github.com/An16og/switch-taskflow",
+    ) -> List[Dict[str, Any]]:
+        """Ensures repository, changelog, and ticket tracker references are attached to the room."""
+        target_room = room_id or self.room_id
+        if not target_room:
+            return []
+
+        existing = self.list_all_references()
+        existing_names = {ref.get("name"): ref for ref in existing}
+        attached = []
+
+        # 1. GitHub Repository Reference
+        gh_ref = existing_names.get("taskflow-repo")
+        if not gh_ref:
+            gh_res = self.create_reference(
+                ref_type="github",
+                name="taskflow-repo",
+                description="TaskFlow core git repository and commit history",
+                instructions="Consult for commit logs, pull requests, and code changes",
+                urls=[github_url],
+            )
+            if gh_res and "id" in gh_res:
+                gh_ref = gh_res
+
+        if gh_ref and "id" in gh_ref:
+            self.attach_reference_to_room(gh_ref["id"], target_room)
+            attached.append(gh_ref)
+
+        # 2. Issue / Ticket Tracker Reference
+        jira_ref = existing_names.get("taskflow-tickets")
+        if not jira_ref:
+            jira_res = self.create_reference(
+                ref_type="jira",
+                name="taskflow-tickets",
+                description="TaskFlow backlog, PRs, and issue tracking board",
+                instructions="Consult for issue specifications, requirements, and ticket details",
+                urls=[f"{github_url}/issues"],
+            )
+            if jira_res and "id" in jira_res:
+                jira_ref = jira_res
+
+        if jira_ref and "id" in jira_ref:
+            self.attach_reference_to_room(jira_ref["id"], target_room)
+            attached.append(jira_ref)
+
+        return attached
+
     def get_user_roles(
         self,
         user_id: Optional[str] = None,
