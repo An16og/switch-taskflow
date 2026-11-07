@@ -10,6 +10,8 @@ from typing import Callable, Awaitable, Optional, Dict, Any, List
 
 import requests
 import websockets
+from config import TASKFLOW_REPO_URL, TASKFLOW_ROOM_REPOS
+from context_resolver import default_context_resolver
 from room_documents import default_room_document_store, RoomDocumentStore, DocumentStatus
 
 logger = logging.getLogger("SwitchClient")
@@ -170,7 +172,23 @@ class SwitchAgentClient:
                         if r.get("room_id") == self.room_id:
                             logger.info("Found assigned room: %s (%s)", r.get("name"), self.room_id)
                             return self.room_id
-                if rooms:
+                    logger.warning(
+                        "Configured SWITCH_ROOM_ID '%s' is not one of this agent's rooms. "
+                        "The agent must be invited to that room before it can receive its events; "
+                        "falling back to another assigned room would silently listen in the wrong place.",
+                        self.room_id,
+                    )
+                    if rooms:
+                        self.room_id = rooms[0].get("room_id")
+                        logger.warning(
+                            "Falling back to room '%s' (%s) for agent '%s'. "
+                            "Fix room membership if this is not the room you are testing in.",
+                            rooms[0].get("name"),
+                            self.room_id,
+                            self.agent_name,
+                        )
+                        return self.room_id
+                elif rooms:
                     self.room_id = rooms[0].get("room_id")
                     logger.info("Connected to room: %s (%s)", rooms[0].get("name"), self.room_id)
                     return self.room_id
@@ -239,7 +257,10 @@ class SwitchAgentClient:
                 if self.generation is not None:
                     query_params.append(f"expected_generation={self.generation}")
                 if self.cursor > 0:
-                    query_params.append(f"start_at={self.cursor}")
+                    # Switch treats `start_at` as a JSON position object. A bare
+                    # integer is the older-client `start_from` form; sending it
+                    # as start_at makes reconnect fail with HTTP 400.
+                    query_params.append(f"start_from={self.cursor}")
 
                 ws_url = f"{self.ws_base_url}/agents/{self.agent_id}/connection/ws?{'&'.join(query_params)}"
                 logger.info("Opening Switch WebSocket connection: %s", ws_url)
@@ -510,9 +531,13 @@ class SwitchAgentClient:
             "addressing": addressing
         }
         try:
+            # update_agent_detail does not need a room binding, and Switch
+            # rejects a connection-id header that names a socket which is not
+            # open yet (409). Address the agent as its owner instead, so this
+            # can run before connect_and_listen() opens the WebSocket.
             resp = requests.post(
                 f"{self.server_url}/agents/{self.agent_id}/ops/update_agent_detail",
-                headers=self.op_headers,
+                headers=self.auth_headers,
                 json=payload,
                 timeout=10,
             )
@@ -795,12 +820,21 @@ class SwitchAgentClient:
     def attach_default_room_references(
         self,
         room_id: Optional[str] = None,
-        github_url: str = "https://github.com/An16og/switch-taskflow",
+        github_url: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """Ensures repository, changelog, and ticket tracker references are attached to the room."""
         target_room = room_id or self.room_id
         if not target_room:
             return []
+        room_repo = TASKFLOW_ROOM_REPOS.get(str(target_room), {})
+        room_repo_url = room_repo.get("url") if isinstance(room_repo, dict) else None
+        github_url = (
+            github_url
+            or room_repo_url
+            or TASKFLOW_REPO_URL
+            or default_context_resolver.get_git_branch_and_remote().get("remote")
+            or "https://github.com/An16og/switch-taskflow"
+        )
 
         existing = self.list_all_references()
         existing_names = {ref.get("name"): ref for ref in existing}
@@ -903,10 +937,13 @@ class SwitchAgentClient:
         seen_names = set()
 
         # 1. Try Switch ops/list_participants
+        # The operation resolves the room from the caller's open connection, so
+        # it must carry X-Switch-Connection-Id. Without it Switch answers
+        # 400 "Not connected to a room. Call connect_to_room first."
         try:
             resp = requests.post(
                 f"{self.server_url}/agents/{self.agent_id}/ops/list_participants",
-                headers=self.auth_headers,
+                headers=self.op_headers,
                 json={},
                 timeout=3,
             )

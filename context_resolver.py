@@ -15,6 +15,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 
+from config import TASKFLOW_REPO_DIR, TASKFLOW_REPO_URL, TASKFLOW_ROOM_REPOS
+
 logger = logging.getLogger("ContextResolver")
 
 
@@ -83,6 +85,8 @@ class ContextResolver:
     def __init__(self, repo_dir: Optional[str] = None):
         if repo_dir:
             self.repo_dir = repo_dir
+        elif TASKFLOW_REPO_DIR:
+            self.repo_dir = TASKFLOW_REPO_DIR
         else:
             cwd = os.getcwd()
             file_dir = str(Path(__file__).resolve().parent)
@@ -113,7 +117,7 @@ class ContextResolver:
         """Resolves active git branch and origin remote URL."""
         info = {
             "branch": "main",
-            "remote": "https://github.com/An16og/switch-taskflow"
+            "remote": TASKFLOW_REPO_URL or "https://github.com/An16og/switch-taskflow"
         }
         try:
             branch_res = subprocess.run(
@@ -215,13 +219,36 @@ class ContextResolver:
         context_notes: Optional[str] = None,
         switch_client: Optional[Any] = None,
         room_id: Optional[str] = None,
-        limit_backlog: int = 25
+        limit_backlog: int = 25,
+        repo_dir: Optional[str] = None,
+        repo_url: Optional[str] = None,
     ) -> RealTaskContext:
-        """Resolves full ground-truth context bundle for worker execution."""
-        git_info = self.get_git_branch_and_remote()
-        commits = self.get_git_commit_log(limit=15)
-        changelog = self.get_changelog()
-        version = self.get_project_version()
+        """Resolves full ground-truth context bundle for worker execution.
+
+        Repository selection order:
+        1. Explicit `repo_dir` / `repo_url` arguments.
+        2. The room's entry in `TASKFLOW_ROOM_REPOS`.
+        3. `TASKFLOW_REPO_DIR` / `TASKFLOW_REPO_URL` environment variables.
+        4. Current working directory if it is a git checkout, otherwise the
+           TaskFlow project directory (the historical default).
+        """
+        room_conf: Dict[str, Any] = {}
+        if room_id:
+            maybe_conf = TASKFLOW_ROOM_REPOS.get(str(room_id))
+            if isinstance(maybe_conf, dict):
+                room_conf = maybe_conf
+
+        effective_repo_dir = repo_dir or room_conf.get("dir")
+        effective_repo_url = repo_url or room_conf.get("url")
+
+        resolver = self
+        if effective_repo_dir and os.path.abspath(effective_repo_dir) != os.path.abspath(self.repo_dir):
+            resolver = ContextResolver(repo_dir=effective_repo_dir)
+
+        git_info = resolver.get_git_branch_and_remote()
+        commits = resolver.get_git_commit_log(limit=15)
+        changelog = resolver.get_changelog()
+        version = resolver.get_project_version()
 
         # Combine text to extract tickets
         combined_text = f"{task_summary} {context_notes or ''}"
@@ -243,7 +270,7 @@ class ContextResolver:
         return RealTaskContext(
             repo_commits=commits,
             git_branch=git_info["branch"],
-            repo_url=git_info["remote"],
+            repo_url=effective_repo_url or git_info["remote"],
             changelog_snippet=changelog,
             project_version=version,
             room_backlog=room_backlog,

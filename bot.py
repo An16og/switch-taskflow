@@ -3,6 +3,7 @@ import os
 import re
 import json
 import time
+import uuid
 import signal
 import asyncio
 import logging
@@ -27,6 +28,10 @@ from config import (
     SWITCH_WORKER_AGENT_ID,
     SWITCH_WORKER_AGENT_API_KEY,
     AMBIENT_TRIAGE_POLICY,
+    AMBIENT_EXTRA_KEYWORDS,
+    TRIAGE_STATIC_WINDOW,
+    TRIAGE_EXPANDED_WINDOW,
+    HANDOFF_TTL_SECONDS,
     check_env
 )
 from models import (
@@ -64,6 +69,7 @@ __all__ = [
     "handle_worker_message",
     "handle_confirm_assignment",
     "parse_approval_command",
+    "parse_assign_command",
     "run_triage_agent",
     "run_worker_agent",
 ]
@@ -97,21 +103,127 @@ room_buffers = default_room_buffer_store
 # Per-room rate limiter: guards against LLM cost DoS and runaway API expenditure
 room_rate_limiter = default_room_rate_limiter
 
-# Action keywords for ambient triage policy
+# Serializes compact-handoff consumption per room so two worker handlers
+# cannot pick up the same queued handoff document.
+room_handoff_locks: Dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
+
+UNASSIGNED_LABELS = {"unassigned", "team", "none", "n/a", "anyone", "someone"}
+
+
+def is_unassigned_assignee(name: Optional[str]) -> bool:
+    """True when a task intentionally belongs to the room rather than a person."""
+    return not name or name.strip().lstrip("@").lower() in UNASSIGNED_LABELS
+
+
+def assignee_display(name: Optional[str]) -> str:
+    """Format an assignee for room cards without pinging a placeholder name."""
+    return "**Unassigned**" if is_unassigned_assignee(name) else f"@{name}"
+
+# Action keywords for ambient triage policy. These are only a cheap first-pass
+# gate: the LLM makes the final task/no-task decision. Keep them broad enough
+# that an unassigned announcement ("someone should...", "we need...") is not
+# silently ignored just because it has no @mention.
 ACTION_KEYWORDS = [
     "todo", "task", "fix", "deploy", "release", "ship", "bug", "action item",
     "please create", "needs to be done", "investigate", "write doc", "document",
-    "audit", "update", "checklist"
+    "audit", "update", "checklist", "add", "create", "build", "implement",
+    "improve", "refactor", "migrate", "test", "review", "draft", "prepare",
+    "set up", "setup", "configure", "optimize", "clean up", "remove", "rename",
+    "move", "design", "plan", "research", "summarize", "analyze", "check",
+    "verify", "validate", "ensure", "handle", "follow up", "take care",
+    "look into", "needs", "need to", "should", "must", "deadline", "due",
+    "assign", "owner", "reminder", "asap", "eod", "backlog", "ticket", "issue",
+    "pr ", "pull request", "readme", "docs", "documentation", "changelog",
+    "announcement", "postmortem", "incident", "onboarding", "spec",
 ]
 
+# Word-boundary matchers keep short keywords from firing inside unrelated
+# words (e.g. "test" inside "latest").
+ACTION_KEYWORD_PATTERNS = [
+    re.compile(r"\b" + re.escape(kw.strip()) + r"\b", re.IGNORECASE)
+    for kw in ACTION_KEYWORDS
+    if kw.strip()
+]
+AMBIENT_EXTRA_KEYWORD_PATTERNS = [
+    re.compile(r"\b" + re.escape(kw.strip()) + r"\b", re.IGNORECASE)
+    for kw in AMBIENT_EXTRA_KEYWORDS
+    if kw.strip()
+]
+
+# Phrases that indicate a task announcement without a specific assignee.
+TASK_INTENT_PATTERNS = [
+    r"\bwe\s+(need|should|must|have to|ought to)\b",
+    r"\b(someone|somebody|anyone|who)\s+(should|needs?\s+to|can|could|will|has\s+to)\b",
+    r"\b(can|could|would)\s+(someone|somebody|anyone|you)\b",
+    r"\b(let'?s|lets)\b",
+    r"\b(need|needs|needed)\s+(to\s+be\s+)?(done|updated|fixed|created|added|reviewed|tested|deployed|written|drafted|checked)\b",
+    r"\bby\s+(eod|end\s+of\s+day|tomorrow|today|monday|tuesday|wednesday|thursday|friday|next\s+week)\b",
+    r"\b(action\s+item|follow[-\s]?up|take\s+care\s+of|look\s+into)\b",
+]
+
+
 def should_ambient_triage(body: str) -> bool:
-    """Evaluates whether an unaddressed room message meets the ambient triage policy."""
+    """Evaluates whether an unaddressed room message should reach the LLM.
+
+    This is deliberately high-recall. The LLM is responsible for rejecting
+    banter; this gate only prevents the bot from spending a token on every
+    single message in a busy room.
+    """
     if AMBIENT_TRIAGE_POLICY == "all":
         return True
     if AMBIENT_TRIAGE_POLICY == "addressed_only":
         return False
-    body_lower = body.lower()
-    return any(kw in body_lower for kw in ACTION_KEYWORDS)
+    body_lower = (body or "").lower()
+    if any(pattern.search(body_lower) for pattern in ACTION_KEYWORD_PATTERNS):
+        return True
+    if any(pattern.search(body_lower) for pattern in AMBIENT_EXTRA_KEYWORD_PATTERNS):
+        return True
+    return any(re.search(pattern, body_lower) for pattern in TASK_INTENT_PATTERNS)
+
+
+def get_static_context(room_id: str) -> List[SlackMessage]:
+    """The small, high-signal window used for the first triage pass."""
+    return room_buffers.get_buffer(room_id, limit=TRIAGE_STATIC_WINDOW)
+
+
+def get_expanded_context(room_id: str) -> List[SlackMessage]:
+    """The larger window used when the latest message is a fragment."""
+    return room_buffers.get_buffer(room_id, limit=TRIAGE_EXPANDED_WINDOW)
+
+
+def should_expand_context(
+    triage_result: TaskTriageResult,
+    latest_text: str,
+    static_count: int,
+    total_count: int,
+) -> bool:
+    """Whether to retry triage with the expanded window.
+
+    The static window is cheap and usually enough. We expand when the model
+    explicitly asks for more context, or when a short fragment / task-like
+    announcement was not detected in the static window but older messages are
+    available.
+    """
+    if triage_result.error:
+        return False
+    if triage_result.needs_more_context:
+        return True
+    if total_count <= static_count or triage_result.is_task:
+        return False
+
+    text = (latest_text or "").strip().lower()
+    fragment_patterns = (
+        r"^(and|also|plus|but|then|so)\b",
+        r"^(by|before|for|with|because|after)\b",
+        r"\b(it|this|that|they|them|those|these)\b",
+    )
+    looks_like_fragment = len(text.split()) <= 10 or any(
+        re.search(pattern, text) for pattern in fragment_patterns
+    )
+    looks_like_task_announcement = any(
+        re.search(pattern, text) for pattern in TASK_INTENT_PATTERNS
+    )
+    return looks_like_fragment or looks_like_task_announcement
 
 
 # ==============================================================================
@@ -212,20 +324,64 @@ async def handle_triage_message(client: SwitchAgentClient, payload: Dict[str, An
             )
         return
 
-    # Agent 1: Classify conversation buffer in worker thread
-    recent_context = list(room_buffers[room_id])
+    # Agent 1: Classify a small static window first. If the latest message is
+    # a fragment or the model needs more context, retry with the expanded
+    # window (default 5 -> 15). The window actually used is forwarded to the
+    # worker so a task split across several messages keeps its full context.
+    static_context = get_static_context(room_id)
+    if not static_context:
+        static_context = [msg_obj]
     active_tasks = task_deduplicator.get_active_task_summaries(room_id)
     triage_result: TaskTriageResult = await asyncio.to_thread(
         triage_classifier.triage_conversation,
-        recent_context,
+        static_context,
         active_tasks=active_tasks,
     )
+    context_used = static_context
+
+    expanded_context = get_expanded_context(room_id)
+    if should_expand_context(
+        triage_result,
+        latest_text=body,
+        static_count=len(static_context),
+        total_count=len(expanded_context),
+    ):
+        expanded_allowed, _, expanded_limit_reason = room_rate_limiter.check_and_acquire(
+            room_id, cost=1
+        )
+        if expanded_allowed:
+            logger.info(
+                "🧠 [Triage] Expanding context window from %d to %d messages (%s)",
+                len(static_context),
+                len(expanded_context),
+                "needs_more_context" if triage_result.needs_more_context else "fragment/task-like message",
+            )
+            expanded_result: TaskTriageResult = await asyncio.to_thread(
+                triage_classifier.triage_conversation,
+                expanded_context,
+                active_tasks=active_tasks,
+            )
+            if not expanded_result.error:
+                triage_result = expanded_result
+                context_used = expanded_context
+            else:
+                logger.warning(
+                    "⚠️ [Triage] Expanded-window classification failed; keeping static result: %s",
+                    expanded_result.error,
+                )
+        else:
+            logger.info(
+                "🧠 [Triage] Context expansion skipped by rate limiter: %s",
+                expanded_limit_reason,
+            )
 
     logger.info(
-        "[Triage] Decision: is_task=%s, type=%s, conf=%s (%s)",
+        "[Triage] Decision: is_task=%s, type=%s, conf=%s, window=%d/%d (%s)",
         triage_result.is_task,
         triage_result.execution_type,
         triage_result.confidence,
+        len(context_used),
+        len(expanded_context),
         triage_result.confidence_reason
     )
 
@@ -310,6 +466,16 @@ async def handle_triage_message(client: SwitchAgentClient, payload: Dict[str, An
         task_deduplicator.record_seen_trigger(room_id, msg_obj.ts)
 
     # TASK DETECTED!
+    # The LLM call may have taken a few seconds; if split-task detail arrived
+    # while it was thinking, give the worker the freshest expanded window.
+    fresh_context = get_expanded_context(room_id)
+    if len(fresh_context) > len(context_used):
+        logger.info(
+            "🔄 [Triage] Refreshing handoff context with %d new message(s) that arrived during classification.",
+            len(fresh_context) - len(context_used),
+        )
+        context_used = fresh_context
+
     # Instead of an in-process Python call, hand off via a Switch targeted room message
     participants = await asyncio.to_thread(client.list_participants, room_id)
     assignee_name, assignee_id = default_user_resolver.resolve_assignee(
@@ -319,6 +485,9 @@ async def handle_triage_message(client: SwitchAgentClient, payload: Dict[str, An
         sender_id=sender,
         sender_name=sender_name,
         participants=participants,
+        # A human task with nobody named belongs to the room, not to whoever
+        # happened to announce it. People can claim/assign it later.
+        prefer_unassigned=(triage_result.execution_type == ExecutionType.HUMAN_TODO),
     )
 
     handoff = TaskHandoffMessage(
@@ -335,19 +504,51 @@ async def handle_triage_message(client: SwitchAgentClient, payload: Dict[str, An
         thread_id=thread_id,
         room_id=room_id,
         requester_name=sender_name,
-        recent_context=[m.model_dump() for m in recent_context[-5:]],
+        recent_context=[m.model_dump() for m in context_used],
     )
 
-    handoff_body = (
-        f"@taskflow-worker [TASK_HANDOFF]\n"
-        f"• **Task:** {handoff.task_title}\n"
-        f"• **Autonomy Mode:** `{handoff.execution_type.value}`\n"
-        f"• **Assignee:** @{handoff.assignee_name}\n"
-        f"• **Requested by:** @{handoff.assigner_name}\n"
-        f"• **Deadline:** {format_deadline_with_timezone(handoff.deadline) or 'None'}\n"
-        f"• **Category:** {handoff.execution_category}\n\n"
-        f"<!-- TASKFLOW_HANDOFF: {handoff.model_dump_json()} -->"
-    )
+    # Keep the chat clean: store the structured handoff in the local TaskFlow
+    # document store and send only a short status line plus a compact reference.
+    # The old full envelope remains as a fallback if the store is unavailable.
+    handoff_ref = None
+    try:
+        handoff_doc = client.document_store.create_document(
+            title=f"TaskFlow Handoff: {handoff.task_title}",
+            content=handoff.model_dump_json(),
+            name=f"taskflow-handoff-{uuid.uuid4().hex[:10]}",
+            description="Internal Triage -> Worker handoff payload. Safe to delete.",
+            room_id=room_id,
+            doc_id=f"doc_{uuid.uuid4().hex[:12]}",
+            status="DRAFT",
+            created_by=client.agent_name,
+            metadata={
+                "type": "taskflow_handoff",
+                "status": "PENDING",
+                "task_title": handoff.task_title,
+                "execution_type": handoff.execution_type.value,
+            },
+        )
+        handoff_ref = getattr(handoff_doc, "doc_id", None)
+        if not isinstance(handoff_ref, str):
+            handoff_ref = None
+    except Exception as e:
+        logger.warning("Could not persist compact handoff payload; using inline fallback: %s", e)
+
+    if handoff_ref:
+        # Deliberately short: the structured payload is in the handoff
+        # document, so the room sees a normal status line instead of a log.
+        handoff_body = "@taskflow-worker On it. [handoff]"
+    else:
+        handoff_body = (
+            f"@taskflow-worker [TASK_HANDOFF]\n"
+            f"• **Task:** {handoff.task_title}\n"
+            f"• **Autonomy Mode:** `{handoff.execution_type.value}`\n"
+            f"• **Assignee:** {assignee_display(handoff.assignee_name)}\n"
+            f"• **Requested by:** @{handoff.assigner_name}\n"
+            f"• **Deadline:** {format_deadline_with_timezone(handoff.deadline) or 'None'}\n"
+            f"• **Category:** {handoff.execution_category}\n\n"
+            f"<!-- TASKFLOW_HANDOFF: {handoff.model_dump_json()} -->"
+        )
 
     logger.info("🚀 [Triage] Handing off task to @taskflow-worker via Switch targeted message...")
     await asyncio.to_thread(
@@ -406,6 +607,21 @@ def parse_approval_command(body: str, addressed: bool = False) -> Optional[Tuple
                 action = "save"
             return action, appr_id
 
+    return None
+
+
+def parse_assign_command(body: str) -> Optional[Tuple[str, str]]:
+    """Parses `assign <task_id> @person` for an existing room task.
+
+    Example: `@taskflow-worker assign sw_task_ab12cd34 @Rohit`
+    """
+    match = re.search(
+        r"\bassign\s+(sw_task_[A-Za-z0-9_]+)\s+(?:to\s+)?@?([A-Za-z0-9_.\-]+)",
+        body or "",
+        re.IGNORECASE,
+    )
+    if match:
+        return match.group(1), match.group(2).lstrip("@")
     return None
 
 
@@ -550,10 +766,55 @@ async def handle_worker_message(client: SwitchAgentClient, payload: Dict[str, An
         logger.info("✅ [Worker] Successfully %sd and resolved '%s' in room [%s] by @%s", action, approval_id, room_id, sender_name)
         return
 
+    # 2. Assign an existing (typically Unassigned) room task to a person.
+    assign_cmd = parse_assign_command(body)
+    if assign_cmd:
+        task_id, target = assign_cmd
+        task = default_room_task_store.get_task(task_id)
+        if not task or task.room_id != room_id:
+            await asyncio.to_thread(
+                client.post_message,
+                body=f"⚠️ **Task Not Found**\nNo task `{task_id}` exists in this room.",
+                thread_id=thread_id,
+                room_id=room_id,
+            )
+            return
+
+        lookup = default_user_resolver.lookup_user(target)
+        if lookup:
+            new_assignee_id, new_assignee_name = lookup
+        else:
+            new_assignee_id, new_assignee_name = None, target
+
+        task.assignee_name = new_assignee_name
+        task.assignee_id = new_assignee_id
+        task.updated_at = time.time()
+        default_room_task_store._save()
+
+        assign_msg = (
+            f"✅ **Task Assigned**\n\n"
+            f"• **Task ID:** `{task.task_id}`\n"
+            f"• **Task:** {task.title}\n"
+            f"• **Assignee:** {assignee_display(new_assignee_name)}\n"
+            f"• **Assigned by:** @{sender_name}\n"
+            f"• **Due Date:** {format_deadline_with_timezone(task.deadline) or 'Not specified'}"
+        )
+        await asyncio.to_thread(
+            client.post_message,
+            body=assign_msg,
+            thread_id=thread_id,
+            room_id=room_id,
+        )
+        logger.info("✅ [Worker] Assigned task %s to @%s in room [%s].", task_id, new_assignee_name, room_id)
+        return
+
     # Check if this message is intended for Worker
     has_handoff_block = "<!-- TASKFLOW_HANDOFF:" in body
+    handoff_ref_match = re.search(r"\[ref:(doc_[a-zA-Z0-9_]+)\]", body)
+    has_compact_handoff = "[handoff]" in body.lower() or handoff_ref_match is not None
     is_worker_target = (
         has_handoff_block or
+        has_compact_handoff or
         "[TASK_HANDOFF]" in body or
         (addressed and any(kw in body.lower() for kw in ("@taskflow-worker", "worker")))
     )
@@ -572,6 +833,60 @@ async def handle_worker_message(client: SwitchAgentClient, payload: Dict[str, An
                 handoff = TaskHandoffMessage.model_validate_json(match.group(1))
         except Exception as e:
             logger.warning("[Worker] Failed parsing JSON handoff block: %s", e)
+
+    # Compact handoff: the structured payload lives in the TaskFlow document
+    # store, so the room only sees a short "On it. [ref:...]" line.
+    if handoff is None and handoff_ref_match:
+        ref_id = handoff_ref_match.group(1)
+        try:
+            doc = client.document_store.get_document(ref_id, room_id=room_id)
+            if doc is None and hasattr(client.document_store, "reload"):
+                client.document_store.reload()
+                doc = client.document_store.get_document(ref_id, room_id=room_id)
+            if doc is not None and getattr(doc, "content", None):
+                handoff = TaskHandoffMessage.model_validate_json(doc.content)
+                client.document_store.delete_document(ref_id)
+                logger.info("📥 [Worker] Loaded compact handoff payload %s.", ref_id)
+            else:
+                logger.warning("[Worker] Compact handoff reference %s was not found in the local store.", ref_id)
+        except Exception as e:
+            logger.warning("[Worker] Failed loading compact handoff %s: %s", ref_id, e)
+
+    # Compact handoff without a visible ref: the triage agent queued a
+    # taskflow_handoff document and sent only "On it.". Claim the oldest
+    # pending handoff in this room under a per-room lock.
+    if handoff is None and has_compact_handoff:
+        lock = room_handoff_locks[room_id or "default_room"]
+        async with lock:
+            try:
+                def pending_handoffs():
+                    found = []
+                    for d in client.document_store.list_documents(room_id=room_id, status="DRAFT"):
+                        meta = getattr(d, "metadata", None)
+                        if not isinstance(meta, dict):
+                            continue
+                        if meta.get("type") != "taskflow_handoff" or meta.get("status") != "PENDING":
+                            continue
+                        if time.time() - d.created_at > HANDOFF_TTL_SECONDS:
+                            client.document_store.delete_document(d.doc_id)
+                            continue
+                        found.append(d)
+                    found.sort(key=lambda d: d.created_at)
+                    return found
+
+                # Always re-read the backing file: triage and worker may be
+                # separate processes, and a handoff written after this worker
+                # started must still be visible.
+                if hasattr(client.document_store, "reload"):
+                    client.document_store.reload()
+                pending = pending_handoffs()
+                if pending:
+                    claimed = pending[0]
+                    handoff = TaskHandoffMessage.model_validate_json(claimed.content)
+                    client.document_store.delete_document(claimed.doc_id)
+                    logger.info("📥 [Worker] Claimed queued compact handoff %s.", claimed.doc_id)
+            except Exception as e:
+                logger.warning("[Worker] Failed claiming queued compact handoff: %s", e)
 
     # Fallback: synthesize handoff if addressed directly without handoff block
     if not handoff:
@@ -703,11 +1018,14 @@ async def handle_worker_message(client: SwitchAgentClient, payload: Dict[str, An
             preview_text = preview_text[:157] + "..."
 
         doc_info = f"• **Room Document:** `{switch_doc_id}` (Draft saved to Switch Workroom)\n" if switch_doc_id else ""
+        proposal_lock_targets = f"@{handoff.assigner_name}"
+        if not is_unassigned_assignee(handoff.assignee_name):
+            proposal_lock_targets += f", @{handoff.assignee_name}"
         short_proposal_card = (
             f"⚡ **TaskFlow Deliverable Drafted (Pending Approval)**\n\n"
             f"• **Deliverable:** {worker_result.artifact_title or handoff.task_title}\n"
             f"• **Task:** {handoff.task_title}\n"
-            f"• **Assignee:** @{handoff.assignee_name}\n"
+            f"• **Assignee:** {assignee_display(handoff.assignee_name)}\n"
             f"• **Assigned by:** @{handoff.assigner_name}\n"
             f"• **Approval ID:** `{approval.approval_id}`\n"
             f"{doc_info}"
@@ -716,7 +1034,7 @@ async def handle_worker_message(client: SwitchAgentClient, payload: Dict[str, An
             f"👉 **To approve & publish to room:**\n`@taskflow-worker approve {approval.approval_id}`\n\n"
             f"👉 **To save to Todoist:**\n`@taskflow-worker save {approval.approval_id}`\n\n"
             f"👉 **To dismiss:**\n`@taskflow-worker dismiss {approval.approval_id}`\n\n"
-            f"*(Approval locked to @{handoff.assignee_name}, @{handoff.assigner_name}, or room role holders)*"
+            f"*(Approval locked to {proposal_lock_targets}, or room role holders)*"
         )
 
         await asyncio.to_thread(
@@ -742,8 +1060,9 @@ async def handle_worker_message(client: SwitchAgentClient, payload: Dict[str, An
             handoff.confidence == ConfidenceLevel.MEDIUM
             or str(getattr(handoff.confidence, "value", handoff.confidence)).upper() == "MEDIUM"
         )
+        is_unassigned = is_unassigned_assignee(handoff.assignee_name)
 
-        if is_medium:
+        if is_medium and not is_unassigned:
             # Medium-confidence path: Hold task for assigner confirmation before paging assignee!
             # Keep the full AI worker-generated action checklist in the approval artifact and preview.
             approval = default_approval_store.create_approval(
@@ -794,6 +1113,12 @@ async def handle_worker_message(client: SwitchAgentClient, payload: Dict[str, An
                         handoff.task_title, approval.approval_id, handoff.assignee_name)
             return
 
+        if is_unassigned:
+            logger.info(
+                "📥 [Worker] Recording unassigned task '%s' directly; no confirmation gate and no person paged.",
+                handoff.task_title,
+            )
+
         # 1. Register task natively in Switch Room Task Store (High Confidence path)
         room_task = default_room_task_store.create_task(
             title=handoff.task_title,
@@ -841,32 +1166,48 @@ async def handle_worker_message(client: SwitchAgentClient, payload: Dict[str, An
         else:
             tracker_line = "• **External Sync:** Native room only (Todoist unconfigured)\n\n"
 
+        unassigned_line = (
+            f"• **Next step:** This task has no owner yet; the team can assign one later.\n"
+            if is_unassigned else ""
+        )
         receipt_text = (
             f"🎯 **Task Tracked in Switch Room**\n\n"
             f"• **Task ID:** `{room_task.task_id}`\n"
             f"• **Task:** {handoff.task_title}\n"
-            f"• **Assignee:** @{handoff.assignee_name}\n"
+            f"• **Assignee:** {assignee_display(handoff.assignee_name)}\n"
             f"• **Assigned by:** @{handoff.assigner_name}\n"
             f"• **Due Date:** {format_deadline_with_timezone(handoff.deadline) or 'Not specified'}\n"
             f"• **Status:** `{room_task.status.value}` (Native Switch Workroom)\n"
+            f"{unassigned_line}"
             f"{tracker_line}"
             f"📋 **Action Checklist:**\n{worker_result.artifact_content}\n\n"
             f"*(Scaffolded by @taskflow-worker via Switch targeted room message)*"
         )
 
-        target_users = list(set(filter(None, [handoff.assigner_name, handoff.assignee_name])))
-        await asyncio.to_thread(
-            client.send_targeted_message,
-            body=receipt_text,
-            target_names=target_users,
-            thread_id=handoff.thread_id,
-            room_id=handoff.room_id
-        )
+        if is_unassigned:
+            # Broadcast so the whole room sees the unclaimed task and can pick it up.
+            target_users = []
+            await asyncio.to_thread(
+                client.post_message,
+                body=receipt_text,
+                thread_id=handoff.thread_id,
+                room_id=handoff.room_id
+            )
+        else:
+            target_users = list(set(filter(None, [handoff.assigner_name, handoff.assignee_name])))
+            await asyncio.to_thread(
+                client.send_targeted_message,
+                body=receipt_text,
+                target_names=target_users,
+                thread_id=handoff.thread_id,
+                room_id=handoff.room_id
+            )
         task_deduplicator.mark_completed(
             room_id=handoff.room_id or client.room_id or "",
             action_summary=handoff.task_title
         )
-        logger.info("✅ [Worker] Recorded Switch room task %s & sent targeted receipt to %s.", room_task.task_id, target_users)
+        logger.info("✅ [Worker] Recorded Switch room task %s & delivered receipt to %s.",
+                    room_task.task_id, target_users or ["room"])
 
 
 # ==============================================================================

@@ -1,3 +1,4 @@
+import json
 import os
 import sys
 from datetime import datetime
@@ -56,6 +57,40 @@ SWITCH_TRUST_ALLOW_INSECURE_GATEWAY = os.getenv("SWITCH_TRUST_ALLOW_INSECURE_GAT
 
 # Ambient Triage Policy ("addressed_only", "action_keywords", "all")
 AMBIENT_TRIAGE_POLICY = os.getenv("AMBIENT_TRIAGE_POLICY", "action_keywords").strip().lower()
+
+# Extra comma-separated action keywords for this team's vocabulary
+AMBIENT_EXTRA_KEYWORDS = [
+    kw.strip().lower()
+    for kw in os.getenv("AMBIENT_EXTRA_KEYWORDS", "").split(",")
+    if kw.strip()
+]
+
+# ==============================================================================
+# Context Window & Repository Grounding
+# ==============================================================================
+# Triage starts with a small high-signal window and expands when the latest
+# message is a fragment / needs earlier context. The expanded window is also
+# passed to the worker, so a task split across several messages keeps its
+# original announcement and follow-up detail.
+TRIAGE_STATIC_WINDOW = int(os.getenv("TRIAGE_STATIC_WINDOW", "5").strip() or 5)
+TRIAGE_EXPANDED_WINDOW = int(os.getenv("TRIAGE_EXPANDED_WINDOW", "15").strip() or 15)
+# Pending compact handoffs older than this are ignored, so a restart does not
+# execute a stale task from a previous session.
+HANDOFF_TTL_SECONDS = int(os.getenv("HANDOFF_TTL_SECONDS", "600").strip() or 600)
+
+# Local checkout the worker reads git history / changelog / version from.
+# Defaults to the current working directory when it is a git repository, then
+# to the TaskFlow project directory.
+TASKFLOW_REPO_DIR = os.getenv("TASKFLOW_REPO_DIR", "").strip()
+# The repository URL shown to the model and attached as a Switch reference.
+TASKFLOW_REPO_URL = os.getenv("TASKFLOW_REPO_URL", "").strip()
+# Optional per-room override, e.g.:
+# TASKFLOW_ROOM_REPOS={"8033d9bb-...": {"dir": "/repos/app", "url": "https://github.com/acme/app"}}
+try:
+    _room_repo_raw = json.loads(os.getenv("TASKFLOW_ROOM_REPOS", "{}") or "{}")
+    TASKFLOW_ROOM_REPOS = _room_repo_raw if isinstance(_room_repo_raw, dict) else {}
+except Exception:
+    TASKFLOW_ROOM_REPOS = {}
 
 # LLM Providers & Configured Models
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()

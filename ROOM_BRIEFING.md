@@ -89,6 +89,8 @@ Every detected conversation item is classified by `taskflow-triage` into one of 
 2. **3-Step Action Scaffolding:** Generates concrete, non-trivial execution steps formatted as interactive checkboxes (`* [ ] Step 1: ...`, `* [ ] Step 2: ...`, `* [ ] Step 3: ...`).
 3. **Todoist API Sync:** Automatically creates the task on Todoist with the parsed due date and checklist embedded in the task description.
 4. **Targeted Delivery Receipt:** Issues a targeted message in the room back to the assigning user with the direct deep link (`https://todoist.com/app/task/<id>`).
+5. **Unassigned Tasks:** If no owner is named, the task is recorded as **Unassigned** immediately instead of being assigned to the announcer or held for confirmation. Explicit `@mentions` and self-commitments still take precedence.
+6. **Claim an Unassigned Task:** Use `@taskflow-worker assign <task_id> @person` to assign it later; the receipt includes the task ID.
 
 ---
 

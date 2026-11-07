@@ -5,7 +5,7 @@
 [![Switch AI](https://img.shields.io/badge/Native%20Protocol-Switch%20AI%20Core-6366F1)](https://switchagents.ai)
 [![Python 3.12](https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white)](https://python.org)
 [![CI](https://github.com/An16og/switch-taskflow/actions/workflows/ci.yml/badge.svg)](https://github.com/An16og/switch-taskflow/actions/workflows/ci.yml)
-[![Tests](https://img.shields.io/badge/Tests-152%20Passing-brightgreen)](https://github.com/An16og/switch-taskflow/actions/workflows/ci.yml)
+[![Tests](https://img.shields.io/badge/Tests-165%20Passing-brightgreen)](https://github.com/An16og/switch-taskflow/actions/workflows/ci.yml)
 [![WebSocket](https://img.shields.io/badge/Transport-Native%20WebSocket%20%2B%20Ops-00C7B7)](https://switchagents.ai)
 [![Switch Trust](https://img.shields.io/badge/Guardrails-Switch%20Trust%20SDK-10B981)](https://switchagents.ai)
 [![Gemini](https://img.shields.io/badge/LLM-Gemini%203.5%20Flash-4285F4?logo=google&logoColor=white)](https://aistudio.google.com)
@@ -158,13 +158,64 @@ python simulate_switch_interaction.py
 - **Scenario 2 (`HUMAN_TODO`):** Simulates Sarah posting an ambient database todo $\rightarrow$ Triage detects action item $\rightarrow$ Worker scaffolds 3-step action checklist $\rightarrow$ Delivers targeted receipt.
 - **Scenario 3 (Sliding Window Deduplication):** Simulates follow-up banter in the sliding context window $\rightarrow$ Semantic deduplicator screens tokens and suppresses duplicate task firing.
 
-### Run the Complete Test Suite (152/152 Passing):
+### Run the Complete Test Suite (165/165 Passing):
 ```bash
 python -m unittest discover
 ```
-*Executes all 152 unit and integration tests covering normalized AUTO_EXECUTE / HUMAN_TODO Todoist save schema, source thread fidelity, reliable agent/bot message skipping (channel_type, IDs, subtypes), deadline timezone anchoring ("Friday 5 PM"), process health & heartbeat liveness, graceful WebSocket closure, per-room LLM cost DoS rate limiting, LLM retries/backoff, Claude structured JSON, model-id startup probes, deterministic multi-agent pipeline execution (AUTO_EXECUTE & HUMAN_TODO), SQLite dedup & room buffer persistence across restarts, pending approvals, prompt injection defense, secret leakage DLP gates, channel backlog triage jobs, Todoist idempotency & 429 retry, grounded context resolution, WebSocket heartbeat liveness, and multi-agent coordination in under 4 seconds!*
+*Executes all 165 unit and integration tests covering normalized AUTO_EXECUTE / HUMAN_TODO Todoist save schema, source thread fidelity, reliable agent/bot message skipping (channel_type, IDs, subtypes), deadline timezone anchoring ("Friday 5 PM"), process health & heartbeat liveness, graceful WebSocket closure, per-room LLM cost DoS rate limiting, LLM retries/backoff, Claude structured JSON, model-id startup probes, deterministic multi-agent pipeline execution (AUTO_EXECUTE & HUMAN_TODO), SQLite dedup & room buffer persistence across restarts, pending approvals, prompt injection defense, secret leakage DLP gates, channel backlog triage jobs, Todoist idempotency & 429 retry, grounded context resolution, WebSocket heartbeat liveness, and multi-agent coordination, configurable repository grounding, unassigned-task ambient detection, 5→15 context expansion, and compact document-backed handoffs in under 4 seconds!*
 
 ---
+
+## 🧭 Repository Grounding & Context Window
+
+### Which repository does the worker use?
+
+The worker does **not** browse GitHub and pick a repository by itself. It reads git history, the changelog, and the version from a **local checkout**, then uses that as verified context for the drafted deliverable. By default it uses the current working directory when that directory is a git checkout; otherwise it falls back to the TaskFlow project directory. That is why running `python bot.py` from this repo makes it talk about this repo.
+
+Override it in `.env`:
+
+```ini
+# Local checkout the worker reads from
+TASKFLOW_REPO_DIR=C:\repos\my-app
+
+# URL shown to the model and attached as a Switch reference
+TASKFLOW_REPO_URL=https://github.com/acme/my-app
+```
+
+Per-room overrides are also supported:
+
+```ini
+TASKFLOW_ROOM_REPOS={"8033d9bb-940c-404d-a6e7-add06d7740b0":{"dir":"C:\\repos\\my-app","url":"https://github.com/acme/my-app"}}
+```
+
+TaskFlow drafts a proposed README/docs change; it does not edit, commit, or push to the remote repository.
+
+### Static 5 → expanded 15 window
+
+Triage starts with the **5 most recent messages**. If the latest message is a fragment or the model sets `needs_more_context`, it retries with the **15-message expanded window**. The same window is forwarded to the worker, so a task split across several messages keeps its original announcement and follow-up detail.
+
+```ini
+TRIAGE_STATIC_WINDOW=5
+TRIAGE_EXPANDED_WINDOW=15
+```
+
+> **Note on "5 after":** the trigger is always the newest message, so the expanded window can only include messages that already arrived (up to 10 earlier + the static 5). Capturing messages *after* a trigger needs a short debounce/aggregation window; that is not enabled by default.
+
+Ambient triage is high-recall: a task announcement with no named assignee ("We need to update the README", "Someone should look into staging") is still triaged. Add team-specific vocabulary with `AMBIENT_EXTRA_KEYWORDS`.
+
+### Unassigned tasks
+
+A `HUMAN_TODO` with no named owner ("We need to update the README", "Someone should look into staging") is now recorded as **Unassigned** and added to the room task store immediately, instead of being assigned to whoever happened to announce it or being held for a confirmation card. Explicit `@mentions`, the LLM's extracted assignee, and self-commitments ("I'll do it") still win. AUTO_EXECUTE deliverables keep the requester as their owner.
+
+The receipt is posted to the room, so the whole team sees the unclaimed task. Claim it later with:
+
+```text
+@taskflow-worker assign sw_task_ab12cd34 @Rohit
+```
+
+### Compact handoff
+
+The Triage → Worker handoff no longer dumps the structured payload into chat. The payload is stored in the TaskFlow handoff store and the room only sees a short `@taskflow-worker On it. [handoff]` line. The Worker claims the queued handoff, executes it, and posts the normal deliverable card.
 
 ## 💥 What Dies Without Switch?
 
@@ -345,5 +396,5 @@ switch-taskflow/
 * **GitHub Repository:** [https://github.com/An16og/switch-taskflow](https://github.com/An16og/switch-taskflow)
 * **Declarative Template:** [`templates/triage-pair.template.yaml`](file:///C:/Users/anujj/OneDrive/Desktop/switch-taskflow/templates/triage-pair.template.yaml) (Switch Version 2 Room Briefing & Scaffolding)
 * **Continuous Integration:** [GitHub Actions CI](https://github.com/An16og/switch-taskflow/actions/workflows/ci.yml)
-* **Test Suite:** 152 Unit & Integration Tests Passing (100% Green)
+* **Test Suite:** 165 Unit & Integration Tests Passing (100% Green)
 * **License:** MIT

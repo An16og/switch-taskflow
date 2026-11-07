@@ -218,8 +218,11 @@ def should_skip_agent_message(
     body = str(payload.get("body") or "")
     is_handoff = (
         "<!-- TASKFLOW_HANDOFF:" in body
+        or "TASKFLOW_HANDOFF_REF:" in body
         or "[TASK_HANDOFF]" in body
         or "[TEST_HANDOFF]" in body
+        or "[HANDOFF]" in body.upper()
+        or re.search(r"\[ref:doc_[a-zA-Z0-9_]+\]", body) is not None
     )
 
     if role == "worker":

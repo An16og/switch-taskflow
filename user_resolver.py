@@ -190,6 +190,7 @@ class UserResolver:
         sender_id: str,
         sender_name: str,
         participants: Optional[List[Dict[str, Any]]] = None,
+        prefer_unassigned: bool = False,
     ) -> Tuple[str, Optional[str]]:
         """
         Resolves the true assignee name and user ID for a triaged task.
@@ -202,7 +203,11 @@ class UserResolver:
            - Explicit self-commitment ("I will...", "I'll take this...")
            - A direct command to the bot for the sender's own deliverable
              (e.g. Kunal asking @taskflow-triage to draft release notes)
-           - No other person is mentioned or assigned.
+           - No other person is mentioned or assigned, and the caller did not
+             ask for unassigned tasks.
+        4. When `prefer_unassigned=True` and nobody is named or committed,
+           the task is recorded as "Unassigned" so the room can pick it up
+           later instead of silently assigning it to the announcer.
         
         Returns (assignee_name, assignee_id).
         """
@@ -255,7 +260,11 @@ class UserResolver:
             logger.info("👤 [UserResolver] Self-commitment detected; assignee is sender '%s' (%s)", sender_name, sender_id)
             return (sender_name, sender_id)
 
-        # 4. Fallback: If no other person is mentioned, default to sender
+        # 4. Fallback: unassigned tasks stay unassigned when requested.
+        if prefer_unassigned:
+            logger.info("📥 [UserResolver] No assignee named; recording task as Unassigned")
+            return ("Unassigned", None)
+
         logger.debug("[UserResolver] No external assignee mentioned; defaulting to sender '%s'", sender_name)
         return (sender_name, sender_id)
 

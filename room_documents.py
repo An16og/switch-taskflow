@@ -199,6 +199,11 @@ class RoomDocumentStore:
         logger.info("Updated Switch room document %s (status: %s, version: %d)", doc_id, doc.status.value, doc.version)
         return doc
 
+    def reload(self) -> None:
+        """Re-read the backing file, for callers sharing it across processes."""
+        self._documents.clear()
+        self._load()
+
     def get_document(self, doc_id: str, room_id: Optional[str] = None) -> Optional[RoomDocument]:
         """Retrieves a room document by its ID."""
         doc = self._documents.get(doc_id)

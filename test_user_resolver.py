@@ -90,6 +90,48 @@ class TestUserResolver(unittest.TestCase):
         self.assertEqual(assignee_name, "Sarah")
         self.assertEqual(assignee_id, "U_SARAH_DEV")
 
+    def test_unassigned_human_task_stays_unassigned(self):
+        """A human task announced to nobody should be recorded as Unassigned."""
+        message = "We need to update the README before the launch."
+        assignee_name, assignee_id = self.resolver.resolve_assignee(
+            triage_assignee_name=None,
+            triage_assignee_id=None,
+            message_text=message,
+            sender_id="U_SARAH_DEV",
+            sender_name="Sarah",
+            prefer_unassigned=True,
+        )
+        self.assertEqual(assignee_name, "Unassigned")
+        self.assertIsNone(assignee_id)
+
+    def test_prefer_unassigned_does_not_override_explicit_mention(self):
+        """Even with unassigned preference, an explicit @person wins."""
+        message = "@Rohit please audit the database pool before tomorrow."
+        assignee_name, assignee_id = self.resolver.resolve_assignee(
+            triage_assignee_name=None,
+            triage_assignee_id=None,
+            message_text=message,
+            sender_id="U_SARAH_DEV",
+            sender_name="Sarah",
+            prefer_unassigned=True,
+        )
+        self.assertEqual(assignee_name, "Rohit")
+        self.assertEqual(assignee_id, "U_ROHIT")
+
+    def test_prefer_unassigned_does_not_override_self_commitment(self):
+        """A self-commitment still belongs to the sender, not Unassigned."""
+        message = "I will fix the staging timeout before EOD."
+        assignee_name, assignee_id = self.resolver.resolve_assignee(
+            triage_assignee_name=None,
+            triage_assignee_id=None,
+            message_text=message,
+            sender_id="U_SARAH_DEV",
+            sender_name="Sarah",
+            prefer_unassigned=True,
+        )
+        self.assertEqual(assignee_name, "Sarah")
+        self.assertEqual(assignee_id, "U_SARAH_DEV")
+
     def test_bot_handles_are_never_assigned(self):
         """Verify bot mentions like @taskflow or @taskflow-triage are never treated as human assignees."""
         message = "@taskflow-triage please draft release notes for v1.3 with dark mode."

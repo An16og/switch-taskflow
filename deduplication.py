@@ -25,9 +25,10 @@ from typing import Deque, Dict, Iterable, List, Optional, Set, Tuple
 from models import SlackMessage
 
 try:
-    from config import TASKFLOW_STATE_DB
+    from config import TASKFLOW_STATE_DB, TRIAGE_EXPANDED_WINDOW
 except ImportError:
     TASKFLOW_STATE_DB = os.getenv("TASKFLOW_STATE_DB", "taskflow_state.db")
+    TRIAGE_EXPANDED_WINDOW = int(os.getenv("TRIAGE_EXPANDED_WINDOW", "15"))
 
 logger = logging.getLogger("TaskDeduplicator")
 
@@ -544,7 +545,7 @@ class RoomBufferStore:
     def __init__(
         self,
         storage_path: Optional[str] = None,
-        max_len: int = 15,
+        max_len: int = TRIAGE_EXPANDED_WINDOW,
     ):
         self.storage_path = TASKFLOW_STATE_DB if storage_path is None else storage_path
         self.max_len = max_len

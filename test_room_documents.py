@@ -571,7 +571,7 @@ class TestRoomDocuments(unittest.TestCase):
         self.assertEqual(pong["generation"], 1024)
 
     def test_reconnect_preserves_stable_connection_id_and_expected_generation(self):
-        """Verifies reconnect preserves connection_id and passes expected_generation and start_at."""
+        """Verifies reconnect preserves connection_id and passes expected_generation and start_from."""
         stable_id = "stable-conn-id-999"
         client = SwitchAgentClient(
             server_url="http://127.0.0.1:52422",
@@ -636,10 +636,10 @@ class TestRoomDocuments(unittest.TestCase):
         self.assertIn(f"connection_id={stable_id}", connected_urls[0])
         self.assertNotIn("expected_generation=", connected_urls[0])
 
-        # Second connect (reconnect): stable connection_id preserved + expected_generation + start_at
+        # Second connect (reconnect): stable connection_id preserved + expected_generation + start_from
         self.assertIn(f"connection_id={stable_id}", connected_urls[1])
         self.assertIn("expected_generation=5001", connected_urls[1])
-        self.assertIn("start_at=20", connected_urls[1])
+        self.assertIn("start_from=20", connected_urls[1])
 
     def test_template_yaml_validity_and_custom_protocol_agent_binding(self):
         """Verifies templates/triage-pair.template.yaml binds custom protocol agents without spawning Claude/Codex."""

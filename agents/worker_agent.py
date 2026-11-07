@@ -9,6 +9,7 @@ from security import (
     validate_auto_post_safety,
     detect_prompt_injection
 )
+from config import TRIAGE_EXPANDED_WINDOW
 from context_resolver import RealTaskContext, default_context_resolver
 
 logger = logging.getLogger("WorkerAgent")
@@ -85,7 +86,7 @@ class WorkerAgent:
 
         framed_messages = [
             frame_untrusted_message(m.user_name, m.user_id, m.ts, m.text)
-            for m in context_messages[-5:]
+            for m in context_messages[-TRIAGE_EXPANDED_WINDOW:]
         ]
         convo_summary = "\n".join(framed_messages)
 
