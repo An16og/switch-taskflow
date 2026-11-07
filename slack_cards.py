@@ -5,11 +5,16 @@ Resolves:
    and buttons only carry lightweight IDs (e.g. {"approval_id": "appr_...", "action": "approve"}).
 2. Unauthorized button clicks: Cards bind actions strictly to designated assignees, assigners,
    and Switch room roles (owner, admin, lead, operator), and display authorized actors.
+3. Safe DM Dispatch: Opens DMs via conversations.open before chat_postMessage to prevent
+   'channel_not_found' errors. Note: On Switch, use send_targeted_message instead of Slack DMs.
 """
 
 import json
+import logging
 from typing import Optional, Dict, Any, List
 from approvals import PendingApprovalStore, default_approval_store, ApprovalStatus
+
+logger = logging.getLogger("SlackCards")
 
 
 def parse_button_payload(value_str: str) -> Dict[str, Any]:
@@ -565,3 +570,78 @@ def build_receipt_blocks(
             }
         }
     ]
+
+
+def open_slack_dm(client: Any, user_id: str) -> Optional[str]:
+    """Opens a Direct Message (DM) conversation channel with a Slack user ID.
+    
+    In Slack API, passing a raw user ID (e.g. 'U0CFRP39TRS') directly to 
+    chat_postMessage frequently fails with 'channel_not_found' unless 
+    conversations.open (conversations_open) is called first.
+    
+    On Switch, native agents should use send_targeted_message instead of Slack DMs.
+    
+    Args:
+        client: A Slack WebClient instance.
+        user_id: The Slack user ID (e.g. 'U0CFRP39TRS') or channel ID.
+        
+    Returns:
+        The DM channel ID (starts with 'D') if opened/found, or the original ID on fallback.
+    """
+    if not client or not user_id:
+        return user_id
+
+    # If already a DM channel ID (starts with 'D') or public/private channel ('C', 'G')
+    if str(user_id).startswith(("D", "C", "G")):
+        return user_id
+
+    try:
+        if hasattr(client, "conversations_open"):
+            resp = client.conversations_open(users=[user_id])
+            if isinstance(resp, dict):
+                channel_obj = resp.get("channel", {})
+            elif hasattr(resp, "get"):
+                channel_obj = resp.get("channel", {})
+            elif hasattr(resp, "data") and isinstance(resp.data, dict):
+                channel_obj = resp.data.get("channel", {})
+            else:
+                channel_obj = getattr(resp, "channel", {})
+
+            if isinstance(channel_obj, dict):
+                dm_id = channel_obj.get("id")
+            else:
+                dm_id = getattr(channel_obj, "id", None)
+
+            if dm_id:
+                return str(dm_id)
+    except Exception as e:
+        logger.warning("conversations.open failed for user %s: %s", user_id, e)
+
+    return user_id
+
+
+def post_slack_dm(
+    client: Any,
+    user_id: str,
+    text: str,
+    blocks: Optional[List[Dict[str, Any]]] = None,
+    **kwargs
+) -> Dict[str, Any]:
+    """Safely posts a message or Block Kit card to a Slack user's DM.
+    
+    Opens the DM conversation first via conversations.open before posting
+    with chat_postMessage to guarantee delivery and avoid 'channel_not_found' errors.
+    
+    On Switch, native agents should use send_targeted_message instead of Slack DMs.
+    """
+    if not client:
+        raise ValueError("Slack client is not configured or None")
+
+    channel_id = open_slack_dm(client, user_id) or user_id
+    return client.chat_postMessage(
+        channel=channel_id,
+        text=text,
+        blocks=blocks,
+        **kwargs
+    )
+

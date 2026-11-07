@@ -12,15 +12,45 @@ from models import SlackMessage, ConfidenceLevel, ExecutionType
 from llm_gateway import LLMGateway
 from agents.triage_agent import TriageAgent
 from agents.worker_agent import WorkerAgent
-from slack_cards import build_auto_execute_card, build_human_todo_card, build_assigner_card
+from slack_cards import (
+    build_auto_execute_card,
+    build_human_todo_card,
+    build_assigner_card,
+    post_slack_dm,
+    open_slack_dm
+)
 from slack_sdk import WebClient
-from config import SLACK_BOT_TOKEN
+from config import (
+    SLACK_BOT_TOKEN,
+    SWITCH_SERVER_URL,
+    SWITCH_ROOM_ID,
+    SWITCH_WORKER_AGENT_ID,
+    SWITCH_WORKER_AGENT_API_KEY,
+    AGENT_REGISTRATION_TOKEN
+)
+from switch_client import SwitchAgentClient
 from user_resolver import default_user_resolver
 
 gateway = LLMGateway()
 triage_agent = TriageAgent(gateway=gateway)
 worker_agent = WorkerAgent(gateway=gateway)
 slack_client = WebClient(token=SLACK_BOT_TOKEN) if SLACK_BOT_TOKEN else None
+
+# Initialize Switch client if configured (On Switch, use send_targeted_message instead of Slack DMs)
+switch_client = None
+if SWITCH_SERVER_URL:
+    try:
+        switch_client = SwitchAgentClient(
+            server_url=SWITCH_SERVER_URL,
+            registration_token=AGENT_REGISTRATION_TOKEN,
+            agent_id=SWITCH_WORKER_AGENT_ID,
+            api_key=SWITCH_WORKER_AGENT_API_KEY,
+            room_id=SWITCH_ROOM_ID,
+            agent_name="taskflow-worker",
+            display_name="TaskFlow Worker",
+        )
+    except Exception:
+        switch_client = None
 
 
 def resolve_target_user_id(client: WebClient = None) -> str:
@@ -56,8 +86,10 @@ def resolve_target_user_id(client: WebClient = None) -> str:
     return "U_SIMULATED_USER"
 
 
-# Resolve target user dynamically (no hardcoded ID)
+# Resolve target user and display name dynamically (no hardcoded ID)
 MY_USER_ID = resolve_target_user_id(slack_client)
+roster_entry = default_user_resolver.lookup_user("anuj")
+MY_USER_NAME = roster_entry[1] if (roster_entry and roster_entry[1]) else "Anuj"
 
 SCENARIOS = {
     "1": {
@@ -159,23 +191,64 @@ def run_simulation(choice: str):
             permalink="https://slack.com"
         )
 
-    # Dispatch card
-    if slack_client and SLACK_BOT_TOKEN:
-        print(f"\n📨 Sending card to your Slack DM (<@{MY_USER_ID}>)...")
+    # Dispatch
+    print("\n--------------------------------------------------------")
+    print("📤 DISPATCHING TASK DELIVERABLES / RECEIPTS")
+    print("--------------------------------------------------------")
+
+    # 1. On Switch: Native targeted message delivery (send_targeted_message)
+    # Architecture Rule: On Switch, use send_targeted_message instead of Slack DMs!
+    switch_dispatched = False
+    if switch_client and SWITCH_ROOM_ID:
+        print(f"🎯 [Switch Native] Using send_targeted_message for @{MY_USER_NAME} in Room '{SWITCH_ROOM_ID}'...")
         try:
-            slack_client.chat_postMessage(
-                channel=MY_USER_ID,
+            if triage.execution_type == ExecutionType.AUTO_EXECUTE:
+                switch_body = (
+                    f"@{MY_USER_NAME} ⚡ **[AUTO_EXECUTE] TaskFlow Deliverable: {triage.action_summary}**\n\n"
+                    f"{worker_res.artifact_content}\n\n"
+                    f"*(Delivered natively via Switch send_targeted_message)*"
+                )
+            else:
+                switch_body = (
+                    f"@{MY_USER_NAME} 📌 **[HUMAN_TODO] Task Handed Off: {triage.action_summary}**\n\n"
+                    f"**Action Checklist:**\n{worker_res.artifact_content}\n\n"
+                    f"*(Delivered natively via Switch send_targeted_message)*"
+                )
+            switch_client.send_targeted_message(
+                body=switch_body,
+                target_names=[MY_USER_NAME],
+                room_id=SWITCH_ROOM_ID
+            )
+            print(f"✅ SUCCESS! Switch targeted message delivered to @{MY_USER_NAME} in room!")
+            switch_dispatched = True
+        except Exception as e:
+            print(f"⚠️ Switch targeted message dispatch skipped: {e}")
+
+    # 2. Slack Bridge Delivery: Open DM via conversations.open before posting to avoid channel_not_found
+    slack_dispatched = False
+    if slack_client and SLACK_BOT_TOKEN:
+        print(f"📨 [Slack Bridge] Opening DM via conversations.open before posting (<@{MY_USER_ID}>)...")
+        try:
+            resp = post_slack_dm(
+                client=slack_client,
+                user_id=MY_USER_ID,
                 text=f"⚡ TaskFlow Update: {triage.action_summary}",
                 blocks=blocks
             )
-            print("✅ SUCCESS! Check your Slack DM with @taskflow right now!")
+            channel_id = resp.get("channel", MY_USER_ID)
+            print(f"✅ SUCCESS! Check your Slack DM (channel: {channel_id}) with @taskflow right now!")
+            slack_dispatched = True
         except Exception as e:
             print(f"⚠️ Live Slack delivery skipped: {e}")
             print(f"ℹ️ Set SLACK_BOT_TOKEN and MY_USER_ID in .env to deliver directly to Slack.")
-    else:
-        print(f"\n📋 [Simulated Dispatch to <@{MY_USER_ID}>]")
-        print(f"✓ Card successfully scaffolded for recipient: {MY_USER_ID}")
-        print(f"ℹ️ (Optional: Set SLACK_BOT_TOKEN and MY_USER_ID in .env to dispatch live Slack DMs).")
+
+    # 3. Simulated / Offline preview
+    if not switch_dispatched and not slack_dispatched:
+        print(f"📋 [Simulated Dispatch Preview]")
+        print(f"• Switch Workroom: send_targeted_message(target_names=['{MY_USER_NAME}'])")
+        print(f"• Slack Bridge:    conversations.open(users=['{MY_USER_ID}']) -> chat_postMessage(channel=dm_channel)")
+        print(f"✓ Task deliverable successfully formatted and verified for @{MY_USER_NAME} (<@{MY_USER_ID}>)!")
+        print(f"ℹ️ (Note: On Switch, use send_targeted_message instead of Slack DMs).")
 
 
 if __name__ == "__main__":

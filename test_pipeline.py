@@ -14,7 +14,9 @@ from slack_cards import (
     build_auto_execute_card,
     build_assigner_card,
     build_receipt_blocks,
-    parse_button_payload
+    parse_button_payload,
+    open_slack_dm,
+    post_slack_dm
 )
 from approvals import default_approval_store
 
@@ -166,6 +168,102 @@ class TestTaskPipeline(unittest.TestCase):
         self.assertTrue(config.check_env())
         # Verify that config does not mandate a parallel Bolt socket mode
         self.assertFalse(hasattr(config, "SLACK_APP_TOKEN"))
+
+
+    def test_open_slack_dm_resolves_dm_channel(self):
+        """Verify open_slack_dm calls conversations.open and retrieves the DM channel ID."""
+        from unittest.mock import MagicMock
+        mock_client = MagicMock()
+        mock_client.conversations_open.return_value = {
+            "ok": True,
+            "channel": {"id": "D0123456789"}
+        }
+
+        channel = open_slack_dm(mock_client, "U0CFRP39TRS")
+        mock_client.conversations_open.assert_called_once_with(users=["U0CFRP39TRS"])
+        self.assertEqual(channel, "D0123456789")
+
+    def test_open_slack_dm_bypasses_for_existing_channel(self):
+        """Verify open_slack_dm skips conversations.open if channel is already a channel ID."""
+        from unittest.mock import MagicMock
+        mock_client = MagicMock()
+
+        # D... is already a direct message channel
+        dm_chan = open_slack_dm(mock_client, "D0CFSUM8SKB")
+        self.assertEqual(dm_chan, "D0CFSUM8SKB")
+        mock_client.conversations_open.assert_not_called()
+
+        # C... is already a public channel
+        pub_chan = open_slack_dm(mock_client, "C012345678")
+        self.assertEqual(pub_chan, "C012345678")
+        mock_client.conversations_open.assert_not_called()
+
+    def test_open_slack_dm_fallback_on_api_error(self):
+        """Verify open_slack_dm gracefully falls back to user_id if conversations.open fails."""
+        from unittest.mock import MagicMock
+        mock_client = MagicMock()
+        mock_client.conversations_open.side_effect = Exception("missing_scope: im:write")
+
+        fallback_chan = open_slack_dm(mock_client, "U0CFRP39TRS")
+        self.assertEqual(fallback_chan, "U0CFRP39TRS")
+
+    def test_post_slack_dm_opens_conversation_first(self):
+        """Verify post_slack_dm opens DM channel first before invoking chat_postMessage."""
+        from unittest.mock import MagicMock
+        mock_client = MagicMock()
+        mock_client.conversations_open.return_value = {
+            "ok": True,
+            "channel": {"id": "D099887766"}
+        }
+        mock_client.chat_postMessage.return_value = {
+            "ok": True,
+            "channel": "D099887766",
+            "ts": "1234567890.123456"
+        }
+
+        resp = post_slack_dm(
+            client=mock_client,
+            user_id="U0CFRP39TRS",
+            text="TaskFlow Update",
+            blocks=[{"type": "section"}]
+        )
+
+        mock_client.conversations_open.assert_called_once_with(users=["U0CFRP39TRS"])
+        mock_client.chat_postMessage.assert_called_once_with(
+            channel="D099887766",
+            text="TaskFlow Update",
+            blocks=[{"type": "section"}]
+        )
+        self.assertEqual(resp["channel"], "D099887766")
+
+    def test_on_switch_use_send_targeted_message_instead_of_slack_dms(self):
+        """Verify that on Switch, agents use send_targeted_message natively to target users."""
+        from unittest.mock import patch, MagicMock
+        from switch_client import SwitchAgentClient
+
+        client = SwitchAgentClient(
+            server_url="http://mock-switch:52422",
+            agent_id="test_worker_agent",
+            api_key="test_worker_key",
+            room_id="room_switch_001"
+        )
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"result": {"id": "msg_targeted_123", "body": "Targeted task"}}
+
+        with patch("requests.post", return_value=mock_resp) as mock_post:
+            res = client.send_targeted_message(
+                body="Task delivery receipt for @Anuj",
+                target_names=["Anuj"],
+                room_id="room_switch_001"
+            )
+            self.assertEqual(res.get("id"), "msg_targeted_123")
+            mock_post.assert_called_once()
+            called_args, called_kwargs = mock_post.call_args
+            self.assertIn("/agents/test_worker_agent/ops/send_targeted_message", called_args[0])
+            self.assertEqual(called_kwargs["json"]["target_names"], ["Anuj"])
+            self.assertEqual(called_kwargs["json"]["body"], "Task delivery receipt for @Anuj")
 
 
 if __name__ == "__main__":
