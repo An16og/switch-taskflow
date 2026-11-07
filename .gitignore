@@ -21,8 +21,10 @@ __pycache__/
 Thumbs.db
 desktop.ini
 
-# Logs
+# Logs & Local State
 *.log
+data/
+*.tmp
 
 # Scratch & Local App Inspection Scripts (Not part of product)
 search_*.py
