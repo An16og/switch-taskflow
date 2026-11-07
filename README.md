@@ -307,6 +307,7 @@ switch-taskflow/
 ├── test_context_resolver.py          # Grounded worker context test suite
 ├── test_user_resolver.py             # Assignee & mention resolver test suite
 ├── test_room_tasks.py                # Room task store & Todoist 4xx diagnostics test suite
+├── test_switch_approval_commands.py  # Switch room approval commands (@taskflow-worker approve/dismiss) test suite
 ├── ROOM_BRIEFING.md                  # Comprehensive room instructions & operational guide
 ├── pyproject.toml                    # Package metadata & pinned dependencies
 ├── requirements.txt                  # Python dependencies
@@ -322,5 +323,5 @@ switch-taskflow/
 * **Powered by:** Switch AI Core (`switchagents.ai` / SandboxAQ)
 * **GitHub Repository:** [https://github.com/An16og/switch-taskflow](https://github.com/An16og/switch-taskflow)
 * **Declarative Template:** [`templates/triage-pair.template.yaml`](file:///C:/Users/anujj/OneDrive/Desktop/switch-taskflow/templates/triage-pair.template.yaml) (Switch Version 2)
-* **Test Suite:** 68 Unit & Integration Tests Passing (100% Green)
+* **Test Suite:** 73 Unit & Integration Tests Passing (100% Green)
 * **License:** MIT

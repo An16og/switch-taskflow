@@ -6,7 +6,7 @@ import time
 import asyncio
 import logging
 from collections import defaultdict, deque
-from typing import Dict, Deque, Any, Optional, List
+from typing import Dict, Deque, Any, Optional, List, Tuple
 
 # Ensure UTF-8 output on Windows console
 if sys.stdout.encoding != 'utf-8':
@@ -41,16 +41,18 @@ from agents.triage_agent import TriageAgent
 from agents.worker_agent import WorkerAgent
 from todoist_client import TodoistClient
 from room_tasks import default_room_task_store
+from approvals import default_approval_store, ApprovalStatus
 from switch_client import SwitchAgentClient
 from deduplication import TaskDeduplicator
 from security import validate_auto_post_safety, detect_prompt_injection
 from user_resolver import default_user_resolver
-from interactions import handle_confirm_assignment
+from interactions import InteractionDispatcher, handle_confirm_assignment
 
 __all__ = [
     "handle_triage_message",
     "handle_worker_message",
     "handle_confirm_assignment",
+    "parse_approval_command",
     "run_triage_agent",
     "run_worker_agent",
 ]
@@ -288,11 +290,56 @@ async def handle_triage_message(client: SwitchAgentClient, payload: Dict[str, An
     logger.info("✅ [Triage] Handoff message dispatched.")
 
 
+def parse_approval_command(body: str, addressed: bool = False) -> Optional[Tuple[str, str]]:
+    """Extracts (action, approval_id) if message contains an approval command for taskflow-worker.
+    
+    Supports commands like:
+    - @taskflow-worker approve appr_...
+    - @taskflow-worker dismiss appr_...
+    - @taskflow-worker reject appr_...
+    - approve appr_... / dismiss appr_... (when addressed or directed to worker)
+    """
+    clean_body = body.strip()
+
+    # Pattern 1: Explicit mention of @taskflow-worker with command
+    m = re.search(
+        r"@?taskflow-worker\b.*?\b(approve|dismiss|reject|confirm|accept)\s+(appr_[a-f0-9]+)",
+        clean_body,
+        re.IGNORECASE
+    )
+    if m:
+        action = m.group(1).lower()
+        appr_id = m.group(2)
+        if action == "reject":
+            action = "dismiss"
+        elif action in ("confirm", "accept"):
+            action = "approve"
+        return action, appr_id
+
+    # Pattern 2: Directly addressed to worker or command syntax starting with command
+    if addressed or clean_body.lower().startswith(("approve appr_", "dismiss appr_", "reject appr_")):
+        m2 = re.search(
+            r"\b(approve|dismiss|reject|confirm|accept)\s+(appr_[a-f0-9]+)",
+            clean_body,
+            re.IGNORECASE
+        )
+        if m2:
+            action = m2.group(1).lower()
+            appr_id = m2.group(2)
+            if action == "reject":
+                action = "dismiss"
+            elif action in ("confirm", "accept"):
+                action = "approve"
+            return action, appr_id
+
+    return None
+
+
 # ==============================================================================
 # AGENT 2: TaskFlow Worker (The Hands - Autonomous Drafts & Todoist Scaffolder)
 # ==============================================================================
 async def handle_worker_message(client: SwitchAgentClient, payload: Dict[str, Any]):
-    """Processes room messages for TaskFlow Worker: receives handoff and executes tasks."""
+    """Processes room messages for TaskFlow Worker: receives handoff, handles approval commands, and executes tasks."""
     body = payload.get("body", "").strip()
     if not body:
         return
@@ -306,6 +353,83 @@ async def handle_worker_message(client: SwitchAgentClient, payload: Dict[str, An
 
     # Filter out worker's own messages
     if sender_name.lower() in ("taskflow-worker",) or sender == client.agent_id:
+        return
+
+    # 1. Check for interactive approval commands in the room (@taskflow-worker approve/dismiss appr_...)
+    cmd = parse_approval_command(body, addressed)
+    if cmd:
+        action, approval_id = cmd
+        logger.info("🎯 [Worker] Received approval command '%s' for '%s' from @%s (%s)", action, approval_id, sender_name, sender)
+
+        dispatcher = InteractionDispatcher(
+            approval_store=default_approval_store,
+            switch_client=client,
+            todoist_client=todoist
+        )
+        interaction_payload = {
+            "user": {
+                "id": sender,
+                "name": sender_name,
+            },
+            "actions": [{
+                "action_id": f"cmd_{action}_{approval_id}",
+                "value": json.dumps({"approval_id": approval_id, "action": action}),
+            }],
+            "room_id": room_id,
+            "thread_id": thread_id,
+        }
+        res = await asyncio.to_thread(dispatcher.handle_interaction, interaction_payload)
+
+        if not res.get("success"):
+            status = res.get("status", "")
+            if status == "NOT_FOUND":
+                msg = f"⚠️ **Approval Not Found or Expired**\nApproval ID `{approval_id}` does not exist in the active store."
+            elif status.startswith("ALREADY_"):
+                msg = f"ℹ️ **Approval Already Resolved**\nApproval ID `{approval_id}` was already {status.replace('ALREADY_', '').lower()}."
+            elif status == "UNAUTHORIZED" or not res.get("authorized"):
+                msg = (
+                    f"⚠️ **Action Refused: Unauthorized**\n\n"
+                    f"Sorry @{sender_name}! You do not have permission to {action} `{approval_id}`.\n"
+                    f"• {res.get('reason', 'Unauthorized')}\n\n"
+                    f"*(Approval locked to designated assignee, assigner, or room role holders)*"
+                )
+            elif status == "BLOCKED_SECURITY_POLICY":
+                msg = f"🛡️ **[Security Policy] Action Blocked**\n{res.get('reason', 'Security violation: deliverable failed safety verification.')}"
+            else:
+                msg = f"⚠️ Could not complete {action} on `{approval_id}`: {res.get('reason', 'Unknown error')}"
+
+            await asyncio.to_thread(
+                client.post_message,
+                body=msg,
+                thread_id=thread_id,
+                room_id=room_id
+            )
+            return
+
+        # If success and action was dismiss
+        if action == "dismiss":
+            dismiss_msg = (
+                f"❌ **TaskFlow Deliverable Dismissed**\n\n"
+                f"• **Approval ID:** `{approval_id}`\n"
+                f"• **Deliverable:** {res['approval'].artifact_title or res['approval'].action_summary if res.get('approval') else 'Task'}\n"
+                f"*(Dismissed by @{sender_name})*"
+            )
+            await asyncio.to_thread(
+                client.post_message,
+                body=dismiss_msg,
+                thread_id=thread_id,
+                room_id=room_id
+            )
+            logger.info("❌ [Worker] Dismissed approval %s by @%s", approval_id, sender_name)
+            return
+
+        # If success and action was approve:
+        # Note: dispatcher.handle_interaction already broadcasted the full artifact to the room via client.post_message!
+        task_deduplicator.mark_completed(
+            room_id=room_id or client.room_id or "",
+            action_summary=res["approval"].action_summary if res.get("approval") else approval_id
+        )
+        logger.info("✅ [Worker] Successfully approved and published '%s' to room [%s] by @%s", approval_id, room_id, sender_name)
         return
 
     # Check if this message is intended for Worker
@@ -361,7 +485,7 @@ async def handle_worker_message(client: SwitchAgentClient, payload: Dict[str, An
 
     # Execute task according to autonomy mode
     if handoff.execution_type == ExecutionType.AUTO_EXECUTE:
-        logger.info("✍️ [Worker] Autonomously generating deliverable for: '%s'...", handoff.task_title)
+        logger.info("✍️ [Worker] Autonomously drafting deliverable for: '%s'...", handoff.task_title)
         worker_result: WorkerExecutionResult = await asyncio.to_thread(
             worker_executor.execute_task,
             triage_result,
@@ -378,7 +502,7 @@ async def handle_worker_message(client: SwitchAgentClient, payload: Dict[str, An
             requester=handoff.requester_name
         )
         if not is_safe:
-            logger.critical("🚨 [Security Policy] BLOCKED AUTO-POST of deliverable '%s': %s", handoff.task_title, violations)
+            logger.critical("🚨 [Security Policy] BLOCKED deliverable '%s': %s", handoff.task_title, violations)
             quarantine_notice = (
                 f"🛡️ **[TaskFlow Security Guardrail] Auto-Post Blocked**\n\n"
                 f"The autonomous worker drafted a deliverable for **'{handoff.task_title}'**, but it was **BLOCKED** by the Switch Trust Exfiltration & Safety Policy.\n"
@@ -393,21 +517,50 @@ async def handle_worker_message(client: SwitchAgentClient, payload: Dict[str, An
             )
             return
 
-        response_text = (
-            f"{worker_result.artifact_content}\n\n"
-            f"*(Generated autonomously by @taskflow-worker on Switch Core)*"
+        # Wire AUTO_EXECUTE to approval store: Worker posts a short card + approval_id, not the final broadcast!
+        approval = default_approval_store.create_approval(
+            action_summary=handoff.task_title,
+            artifact_content=worker_result.artifact_content,
+            artifact_title=worker_result.artifact_title or handoff.task_title,
+            action_type="AUTO_EXECUTE",
+            assignee_name=handoff.assignee_name,
+            assignee_id=handoff.assignee_id,
+            assigner_name=handoff.assigner_name,
+            assigner_id=handoff.assigner_id,
+            category=handoff.execution_category or "Knowledge Deliverable",
+            deadline=handoff.deadline,
+            context_notes=handoff.context_notes,
+            room_id=handoff.room_id or client.room_id or "",
+            message_ts=handoff.thread_id,
         )
+
+        # Extract concise preview snippet (skip title headers)
+        preview_lines = [l.strip() for l in worker_result.artifact_content.splitlines() if l.strip() and not l.strip().startswith("#")]
+        preview_text = preview_lines[0] if preview_lines else "Deliverable drafted and awaiting review."
+        if len(preview_text) > 160:
+            preview_text = preview_text[:157] + "..."
+
+        short_proposal_card = (
+            f"⚡ **TaskFlow Deliverable Drafted (Pending Approval)**\n\n"
+            f"• **Deliverable:** {worker_result.artifact_title or handoff.task_title}\n"
+            f"• **Task:** {handoff.task_title}\n"
+            f"• **Assignee:** @{handoff.assignee_name}\n"
+            f"• **Assigned by:** @{handoff.assigner_name}\n"
+            f"• **Approval ID:** `{approval.approval_id}`\n"
+            f"• **Status:** `PENDING_APPROVAL`\n\n"
+            f"📝 **Preview:**\n> {preview_text}\n\n"
+            f"👉 **To approve & publish to room:**\n`@taskflow-worker approve {approval.approval_id}`\n\n"
+            f"👉 **To dismiss:**\n`@taskflow-worker dismiss {approval.approval_id}`\n\n"
+            f"*(Approval locked to @{handoff.assignee_name}, @{handoff.assigner_name}, or room role holders)*"
+        )
+
         await asyncio.to_thread(
             client.post_message,
-            body=response_text,
+            body=short_proposal_card,
             thread_id=handoff.thread_id,
             room_id=handoff.room_id
         )
-        task_deduplicator.mark_completed(
-            room_id=handoff.room_id or client.room_id or "",
-            action_summary=handoff.task_title
-        )
-        logger.info("✅ [Worker] Posted autonomous deliverable to room [%s].", handoff.room_id)
+        logger.info("📋 [Worker] Created pending approval %s and posted proposal card to room [%s].", approval.approval_id, handoff.room_id)
 
     elif handoff.execution_type == ExecutionType.HUMAN_TODO:
         logger.info("📋 [Worker] Scaffolding action plan & creating Todoist task for: '%s'...", handoff.task_title)

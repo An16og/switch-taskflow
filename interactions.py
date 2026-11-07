@@ -119,6 +119,24 @@ class InteractionDispatcher:
                 "approval": None
             }
 
+        # Check if already resolved
+        if appr.status != ApprovalStatus.PENDING:
+            logger.info("Approval '%s' is already resolved with status %s", approval_id, appr.status.value)
+            return {
+                "success": False,
+                "authorized": True,
+                "status": f"ALREADY_{appr.status.value}",
+                "reason": f"Approval '{approval_id}' has already been {appr.status.value.lower()}.",
+                "blocks": build_approval_resolution_card(
+                    action_summary=appr.action_summary,
+                    status=appr.status.value,
+                    resolved_by=appr.resolved_by or "authorized_user",
+                    artifact_title=appr.artifact_title,
+                    permalink=appr.permalink,
+                ),
+                "approval": appr
+            }
+
         # 4. Resolve room roles for the clicking user
         resolved_roles: List[str] = list(user_roles) if user_roles is not None else []
         if not resolved_roles and self.switch_client and hasattr(self.switch_client, "get_user_roles"):
