@@ -1,0 +1,102 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 480" width="100%" height="100%">
+  <defs>
+    <linearGradient id="grad2" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0f172a" />
+      <stop offset="100%" stop-color="#1e1e38" />
+    </linearGradient>
+  </defs>
+
+  <rect width="900" height="480" fill="url(#grad2)" rx="16" />
+  <rect x="0.5" y="0.5" width="899" height="479" fill="none" stroke="#334155" rx="16" />
+
+  <!-- Window Header -->
+  <rect x="0" y="0" width="900" height="48" fill="#1e293b" rx="16" />
+  <rect x="0" y="32" width="900" height="16" fill="#1e293b" />
+  <line x1="0" y1="48" x2="900" y2="48" stroke="#334155" stroke-width="1" />
+  <circle cx="24" cy="24" r="6" fill="#ef4444" />
+  <circle cx="44" cy="24" r="6" fill="#f59e0b" />
+  <circle cx="64" cy="24" r="6" fill="#10b981" />
+  <text x="450" y="29" fill="#94a3b8" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="13" font-weight="600" text-anchor="middle">
+    Autonomous Knowledge Work (AUTO_EXECUTE) — Deliverable Generation
+  </text>
+  <rect x="760" y="14" width="120" height="20" rx="10" fill="#10b981" />
+  <text x="820" y="28" fill="#ffffff" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="10" font-weight="700" text-anchor="middle">
+    AUTO_EXECUTE
+  </text>
+
+  <!-- Message 1: User Request -->
+  <g transform="translate(24, 68)">
+    <rect width="852" height="72" fill="#1e293b" rx="8" stroke="#334155" />
+    <circle cx="36" cy="36" r="16" fill="#6366f1" />
+    <text x="36" y="41" fill="#ffffff" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="12" font-weight="700" text-anchor="middle">K</text>
+    <text x="64" y="28" fill="#f8fafc" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="13" font-weight="700">Kunal (Product Lead)</text>
+    <text x="210" y="28" fill="#64748b" font-family="monospace" font-size="11">10:14 AM</text>
+    <text x="64" y="52" fill="#cbd5e1" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="13">
+      @taskflow-triage please draft release notes for v1.3 with dark mode and security patches.
+    </text>
+  </g>
+
+  <!-- Message 2: Worker Output Card -->
+  <g transform="translate(24, 152)">
+    <rect width="852" height="304" fill="#0f172a" rx="8" stroke="#10b981" stroke-width="1.5" />
+
+    <!-- Card Header -->
+    <rect width="852" height="42" fill="#064e3b" rx="8" />
+    <rect y="30" width="852" height="12" fill="#064e3b" />
+    <circle cx="36" cy="21" r="12" fill="#10b981" />
+    <text x="36" y="26" fill="#ffffff" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="10" font-weight="700" text-anchor="middle">🤖</text>
+    <text x="58" y="25" fill="#f8fafc" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="13" font-weight="700">taskflow-worker [BOT]</text>
+    <rect x="200" y="12" width="55" height="18" rx="4" fill="#10b981" />
+    <text x="227" y="24" fill="#ffffff" font-family="monospace" font-size="9" font-weight="700" text-anchor="middle">APP</text>
+    <text x="268" y="25" fill="#6ee7b7" font-family="monospace" font-size="11">10:14 AM • Autonomous Knowledge Deliverable</text>
+
+    <!-- Content -->
+    <text x="28" y="70" fill="#f8fafc" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="16" font-weight="700">
+      🚀 Release Notes - Version 1.3 &amp; Security Hardening
+    </text>
+    <text x="28" y="94" fill="#94a3b8" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="12" font-weight="600">
+      NEW FEATURES &amp; ENHANCEMENTS:
+    </text>
+    <text x="28" y="116" fill="#cbd5e1" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="12">
+      • <tspan font-weight="700">Dark Mode Support:</tspan> Complete high-contrast dark theme toggle with persisted user preference.
+    </text>
+    <text x="28" y="136" fill="#cbd5e1" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="12">
+      • <tspan font-weight="700">Idempotent Webhooks:</tspan> Stripe webhook dedup and payload verification with retry backoff.
+    </text>
+    <text x="28" y="156" fill="#cbd5e1" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="12">
+      • <tspan font-weight="700">Switch Trust Defense:</tspan> Pre-publication DLP gate blocks credential exfiltration and prompt injection.
+    </text>
+
+    <!-- Real Context Grounding Badge -->
+    <rect x="28" y="172" width="796" height="34" fill="#1e293b" rx="6" stroke="#475569" />
+    <text x="40" y="193" fill="#38bdf8" font-family="monospace" font-size="11">
+      🔍 Grounded in git commit log (cf814c7, 3856b70) • CHANGELOG.md • Zero hallucinations
+    </text>
+
+    <!-- RBAC Authorized Banner -->
+    <rect x="28" y="214" width="796" height="30" fill="#1e1b4b" rx="4" stroke="#6366f1" />
+    <text x="40" y="233" fill="#c7d2fe" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="11" font-weight="600">
+      🔒 Authorized to Act: @Kunal (Requester) or Room Roles: owner, admin, lead, operator
+    </text>
+
+    <!-- Interactive Buttons -->
+    <rect x="28" y="254" width="130" height="34" fill="#10b981" rx="6" />
+    <text x="93" y="275" fill="#ffffff" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="12" font-weight="700" text-anchor="middle">
+      🚀 Approve &amp; Post
+    </text>
+
+    <rect x="170" y="254" width="160" height="34" fill="#334155" rx="6" />
+    <text x="250" y="275" fill="#e2e8f0" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="12" font-weight="600" text-anchor="middle">
+      📋 Save as Room Doc
+    </text>
+
+    <rect x="342" y="254" width="100" height="34" fill="#1e293b" rx="6" stroke="#475569" />
+    <text x="392" y="275" fill="#94a3b8" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="12" font-weight="600" text-anchor="middle">
+      ❌ Dismiss
+    </text>
+
+    <text x="460" y="275" fill="#64748b" font-family="monospace" font-size="10">
+      Payload ID: appr_e66a9b48f3c2 (&lt;100 chars, no Slack 2000-char limit)
+    </text>
+  </g>
+</svg>

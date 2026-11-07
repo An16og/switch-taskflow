@@ -5,6 +5,7 @@
 [![Switch AI](https://img.shields.io/badge/Native%20Protocol-Switch%20AI%20Core-6366F1)](https://switchagents.ai)
 [![Python 3.12](https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white)](https://python.org)
 [![CI](https://github.com/An16og/switch-taskflow/actions/workflows/ci.yml/badge.svg)](https://github.com/An16og/switch-taskflow/actions/workflows/ci.yml)
+[![Tests](https://img.shields.io/badge/Tests-118%20Passing-brightgreen)](https://github.com/An16og/switch-taskflow/actions/workflows/ci.yml)
 [![WebSocket](https://img.shields.io/badge/Transport-Native%20WebSocket%20%2B%20Ops-00C7B7)](https://switchagents.ai)
 [![Switch Trust](https://img.shields.io/badge/Guardrails-Switch%20Trust%20SDK-10B981)](https://switchagents.ai)
 [![Gemini](https://img.shields.io/badge/LLM-Gemini%203.5%20Flash-4285F4?logo=google&logoColor=white)](https://aistudio.google.com)
@@ -91,16 +92,14 @@ TaskFlow transforms passive chat channels into an **Autonomous Multi-Agent Workr
 Follow these 5 simple steps to get TaskFlow running locally in under 10 minutes:
 
 ### Step 1: Ensure Switch Core is Running (1 min)
-If you have **Switch Console** open, Switch Core is already listening on `http://127.0.0.1:52422`.
+When **Switch Console** is open, Switch Core is actively listening on port 52422 (`http://127.0.0.1:52422`).
 
-*Alternatively, run Switch Core via Docker or local CLI:*
+Verify local Switch Server health:
 ```bash
-# Via Docker:
-docker run -d -p 52422:52422 --name switch-core switchagents/switch-core:latest
-
-# Or verify local Switch Server health:
 curl http://127.0.0.1:52422/health
+# Expected response: {"status":"ok"}
 ```
+*(If you are connecting to a remote Switch Core instance, update `SWITCH_SERVER_URL` in `.env` accordingly).*
 
 ### Step 2: Clone & Install Dependencies (2 mins)
 ```bash
@@ -186,6 +185,8 @@ Why is Switch AI Core fundamentally indispensable to TaskFlow? Here is what cata
 ### 1. Switch Console & Declarative Workroom Deployment
 Switch Console provisions the workroom, instructions, and binds `taskflow-triage` and `taskflow-worker` using `templates/triage-pair.template.yaml` (while `python bot.py` powers the real agent daemon):
 
+![Switch Console & Declarative Workroom Deployment](docs/images/1_switch_console_workroom.svg)
+
 ```
 ┌────────────────────────────────────────────────────────────────────────┐
 │ SWITCH CONSOLE — Room: taskflow-operations (a327cb7f-...)             │
@@ -203,6 +204,8 @@ Switch Console provisions the workroom, instructions, and binds `taskflow-triage
 
 ### 2. Autonomous Deliverable Generation (`AUTO_EXECUTE`)
 When an engineering ask is self-contained knowledge creation, the worker immediately drafts the complete deliverable into the room:
+
+![Autonomous Deliverable Generation (AUTO_EXECUTE)](docs/images/2_auto_execute_deliverable.svg)
 
 ```
 ┌────────────────────────────────────────────────────────────────────────┐
@@ -225,6 +228,8 @@ When an engineering ask is self-contained knowledge creation, the worker immedia
 ### 3. Action Scaffolding & Todoist Sync (`HUMAN_TODO`)
 When a task involves production infrastructure or human decisions, the worker scaffolds a 3-step action checklist and syncs with Todoist:
 
+![Action Scaffolding & Todoist Sync (HUMAN_TODO)](docs/images/3_human_todo_checklist.svg)
+
 ```
 ┌────────────────────────────────────────────────────────────────────────┐
 │ Sarah [10:20 AM]                                                       │
@@ -245,6 +250,8 @@ When a task involves production infrastructure or human decisions, the worker sc
 
 ### 4. Switch Trust Guardrails & Anti-Injection Gate
 When an attacker attempts prompt injection or secret exfiltration, Switch Trust and the pre-publication safety gate immediately neutralize the threat:
+
+![Switch Trust Guardrails & Anti-Injection Gate](docs/images/4_switch_trust_guardrails.svg)
 
 ```
 ┌────────────────────────────────────────────────────────────────────────┐
@@ -282,6 +289,8 @@ When an attacker attempts prompt injection or secret exfiltration, Switch Trust 
 switch-taskflow/
 ├── templates/
 │   └── triage-pair.template.yaml     # Declarative Switch V2 room template (room briefing & agent binding)
+├── docs/
+│   └── images/                       # Protocol walkthrough & visual architecture cards (SVG)
 ├── agents/
 │   ├── __init__.py
 │   ├── triage_agent.py               # Triage classifier & entity extraction
