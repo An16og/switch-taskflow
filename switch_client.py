@@ -33,6 +33,7 @@ class SwitchAgentClient:
         agent_name: str = "taskflow",
         display_name: str = "TaskFlow",
         description: str = "Autonomous Task Triage & Workroom Worker",
+        overwrite: bool = False,
     ):
         self.server_url = server_url.rstrip("/")
         self.ws_base_url = self.server_url.replace("http://", "ws://").replace("https://", "wss://")
@@ -43,6 +44,7 @@ class SwitchAgentClient:
         self.agent_name = agent_name
         self.display_name = display_name
         self.description = description
+        self.overwrite = overwrite
 
         self.connection_id = str(uuid.uuid4())
         self._ws = None
@@ -63,8 +65,12 @@ class SwitchAgentClient:
         headers["X-Switch-Connection-Id"] = self.connection_id
         return headers
 
-    def register_or_validate(self) -> bool:
-        """Ensures the agent is registered with the Switch Server."""
+    def register_or_validate(self, overwrite: Optional[bool] = None) -> bool:
+        """Ensures the agent is registered with the Switch Server without overwriting existing credentials.
+        
+        Protocol rule: overwrite=True issues a new API key and invalidates the previous one,
+        killing existing agent sessions. By default, overwrite=False is strictly enforced.
+        """
         if self.agent_id and self.api_key:
             try:
                 resp = requests.get(
@@ -75,12 +81,14 @@ class SwitchAgentClient:
                 if resp.status_code == 200:
                     logger.info("Validated existing Switch Agent ID: %s", self.agent_id)
                     return True
-                logger.warning("Existing agent credentials invalid (%s). Re-registering...", resp.status_code)
+                logger.warning("Existing agent credentials invalid (%s). Attempting safe registration...", resp.status_code)
             except Exception as e:
                 logger.warning("Failed to validate existing agent: %s", e)
 
         if not self.registration_token:
             raise ValueError("Cannot register agent without AGENT_REGISTRATION_TOKEN")
+
+        do_overwrite = self.overwrite if overwrite is None else overwrite
 
         payload = {
             "name": self.agent_name,
@@ -94,10 +102,10 @@ class SwitchAgentClient:
                 "post_invocation_mediation": [],
                 "event_reporting": [],
             },
-            "overwrite": True,
+            "overwrite": do_overwrite,
         }
 
-        logger.info("Registering '%s' on Switch Server %s...", self.agent_name, self.server_url)
+        logger.info("Registering '%s' on Switch Server %s (overwrite=%s)...", self.agent_name, self.server_url, do_overwrite)
         resp = requests.post(
             f"{self.server_url}/agents",
             headers={
@@ -108,14 +116,25 @@ class SwitchAgentClient:
             timeout=10,
         )
 
-        if resp.status_code not in (200, 201):
-            raise RuntimeError(f"Switch agent registration failed [{resp.status_code}]: {resp.text}")
+        if resp.status_code in (200, 201):
+            data = resp.json()
+            self.agent_id = data.get("id")
+            self.api_key = data.get("api_key")
+            logger.info("Registered successfully! Agent ID: %s", self.agent_id)
+            return True
 
-        data = resp.json()
-        self.agent_id = data.get("id")
-        self.api_key = data.get("api_key")
-        logger.info("Registered successfully! Agent ID: %s", self.agent_id)
-        return True
+        if resp.status_code == 409:
+            err_msg = (
+                f"Agent '{self.agent_name}' already exists on Switch Server. "
+                "Registration stopped with overwrite=False to protect active credentials and connections "
+                "(per Switch protocol: overwrite=True rotates the API key and invalidates the old one). "
+                "Please configure SWITCH_*_AGENT_ID and SWITCH_*_AGENT_API_KEY in your environment, "
+                "or explicitly pass overwrite=True only if you intend to rotate credentials."
+            )
+            logger.error(err_msg)
+            raise RuntimeError(err_msg)
+
+        raise RuntimeError(f"Switch agent registration failed [{resp.status_code}]: {resp.text}")
 
     def ensure_room(self) -> str:
         """Finds an existing room or creates an operations room for the agent."""

@@ -444,6 +444,64 @@ class TestRoomDocuments(unittest.TestCase):
 
             client.apply_room_briefing.assert_called()
 
+    def test_register_or_validate_defaults_to_overwrite_false(self):
+        """Verifies register_or_validate sends overwrite=False by default to avoid rotating keys."""
+        client = SwitchAgentClient(
+            server_url="http://127.0.0.1:52422",
+            registration_token="test_token_123",
+            agent_name="taskflow-test",
+        )
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"id": "agent_new_id", "api_key": "api_new_key"}
+
+        with patch("requests.post", return_value=mock_resp) as mock_post:
+            res = client.register_or_validate()
+            self.assertTrue(res)
+            mock_post.assert_called_once()
+            payload = mock_post.call_args[1]["json"]
+            self.assertFalse(payload["overwrite"])
+            self.assertEqual(client.agent_id, "agent_new_id")
+            self.assertEqual(client.api_key, "api_new_key")
+
+    def test_register_or_validate_skips_registration_when_valid(self):
+        """Verifies register_or_validate validates existing credentials and avoids calling POST /agents."""
+        client = SwitchAgentClient(
+            server_url="http://127.0.0.1:52422",
+            agent_id="existing_agent_id",
+            api_key="existing_key",
+            registration_token="test_token_123",
+        )
+
+        mock_get_resp = MagicMock()
+        mock_get_resp.status_code = 200
+
+        with patch("requests.get", return_value=mock_get_resp) as mock_get, \
+             patch("requests.post") as mock_post:
+            res = client.register_or_validate()
+            self.assertTrue(res)
+            mock_get.assert_called_once()
+            mock_post.assert_not_called()
+
+    def test_register_or_validate_handles_409_conflict_safely(self):
+        """Verifies register_or_validate raises RuntimeError on 409 conflict when overwrite=False."""
+        client = SwitchAgentClient(
+            server_url="http://127.0.0.1:52422",
+            registration_token="test_token_123",
+            agent_name="taskflow-conflict",
+        )
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 409
+        mock_resp.text = '{"detail":"Agent already exists"}'
+
+        with patch("requests.post", return_value=mock_resp):
+            with self.assertRaises(RuntimeError) as ctx:
+                client.register_or_validate(overwrite=False)
+            self.assertIn("overwrite=False", str(ctx.exception))
+            self.assertIn("protect active credentials", str(ctx.exception))
+
 
 if __name__ == "__main__":
     unittest.main()
