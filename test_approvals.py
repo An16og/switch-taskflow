@@ -17,7 +17,7 @@ from slack_cards import (
     build_unauthorized_action_card,
     parse_button_payload
 )
-from interactions import InteractionDispatcher
+from interactions import InteractionDispatcher, handle_confirm_assignment
 
 
 class TestPendingApprovalStore(unittest.TestCase):
@@ -266,6 +266,133 @@ class TestPendingApprovalStore(unittest.TestCase):
         self.assertIn("<@U999>", text)
         self.assertIn("Release Notes v1.3", text)
         self.assertIn("https://todoist.com/app/task/123", text)
+
+
+    def test_build_assigner_card_preserves_action_plan_on_medium_confidence_path(self):
+        """Verify build_assigner_card preserves worker checklist and embeds preview in card."""
+        worker_plan = "* [ ] Analyze DB migration PR\n* [ ] Run benchmark suite\n* [ ] Sign off before Friday"
+        blocks = build_assigner_card(
+            action_summary="Review and benchmark database migration",
+            target_assignee="Anuj",
+            target_assignee_id="U0CFRP39TRS",
+            assigner_id="U_PRIYA",
+            assigner_name="Priya",
+            deadline="Friday 5 PM",
+            action_plan=worker_plan,
+            store=self.store
+        )
+        # Verify action plan preview is displayed in blocks
+        plan_block = next((b for b in blocks if "Proposed AI Action Plan" in b.get("text", {}).get("text", "")), None)
+        self.assertIsNotNone(plan_block)
+        self.assertIn("Analyze DB migration PR", plan_block["text"]["text"])
+
+        # Extract approval_id and verify stored artifact_content contains the full worker checklist
+        action_elem = next(b for b in blocks if b.get("type") == "actions")["elements"][0]
+        btn_payload = parse_button_payload(action_elem["value"])
+        appr = self.store.get_approval(btn_payload["approval_id"])
+        self.assertIsNotNone(appr)
+        self.assertEqual(appr.artifact_content, worker_plan)
+
+    def test_handle_confirm_assignment_preserves_worker_plan_never_stubs(self):
+        """Verify handle_confirm_assignment forwards full worker checklist, NEVER a stub."""
+        from unittest.mock import MagicMock
+        worker_plan = "* [ ] Step 1: Benchmark DB\n* [ ] Step 2: Test rollback\n* [ ] Step 3: Approve PR"
+        appr = self.store.create_approval(
+            action_type="ASSIGNMENT",
+            action_summary="Review PR #89",
+            artifact_content=worker_plan,
+            assignee_id="U0CFRP39TRS",
+            assignee_name="Anuj",
+            assigner_id="U_PRIYA",
+            assigner_name="Priya",
+            deadline="Friday 5 PM"
+        )
+
+        mock_ack = MagicMock()
+        mock_respond = MagicMock()
+        mock_client = MagicMock()
+        mock_client.conversations_open.return_value = {"ok": True, "channel": {"id": "D_ANUJ"}}
+        mock_client.chat_postMessage.return_value = {"ok": True, "ts": "123456"}
+
+        body = {
+            "user": {"id": "U_PRIYA", "username": "priya"},
+            "actions": [
+                {
+                    "action_id": "btn_confirm_assignment",
+                    "value": json.dumps({"approval_id": appr.approval_id, "action": "confirm"})
+                }
+            ]
+        }
+
+        res = handle_confirm_assignment(
+            ack=mock_ack,
+            body=body,
+            client=mock_client,
+            respond=mock_respond,
+            store=self.store
+        )
+
+        self.assertTrue(res["success"])
+        self.assertEqual(res["action_plan"], worker_plan)
+        self.assertNotEqual(res["action_plan"], "* [ ] Review requirements and complete task")
+
+        # Verify chat_postMessage was invoked with the full worker checklist
+        mock_client.chat_postMessage.assert_called_once()
+        called_kwargs = mock_client.chat_postMessage.call_args[1]
+        blocks = called_kwargs.get("blocks", [])
+        # Check action plan block in the forwarded human todo card
+        plan_block = next((b for b in blocks if "Step 1: Benchmark DB" in b.get("text", {}).get("text", "")), None)
+        self.assertIsNotNone(plan_block)
+        self.assertNotIn("* [ ] Review requirements and complete task", str(blocks))
+
+    def test_interaction_dispatcher_confirm_forwards_plan_and_notifies(self):
+        """Verify InteractionDispatcher handles 'confirm' by resolving approval and notifying Switch."""
+        from unittest.mock import MagicMock
+        worker_plan = "* [ ] Step 1: Reproduce issue\n* [ ] Step 2: Deploy fix"
+        appr = self.store.create_approval(
+            action_type="ASSIGNMENT",
+            action_summary="Fix staging timeout",
+            artifact_content=worker_plan,
+            assignee_id="U0CFRP39TRS",
+            assignee_name="Anuj",
+            assigner_id="U_PRIYA",
+            assigner_name="Priya",
+            room_id="room_99"
+        )
+
+        mock_switch = MagicMock()
+        mock_todoist = MagicMock()
+        mock_todoist.create_task.return_value = {"id": "task_123", "url": "https://todoist.com/app/task/123"}
+        dispatcher = InteractionDispatcher(
+            approval_store=self.store,
+            switch_client=mock_switch,
+            todoist_client=mock_todoist
+        )
+
+        confirm_payload = {
+            "user": {"id": "U_PRIYA", "username": "priya"},
+            "actions": [
+                {
+                    "action_id": "btn_confirm_assignment",
+                    "value": json.dumps({"approval_id": appr.approval_id, "action": "confirm"})
+                }
+            ]
+        }
+
+        result = dispatcher.handle_interaction(confirm_payload)
+        self.assertTrue(result["success"])
+        self.assertTrue(result["authorized"])
+
+        # Verify Todoist was called with full worker plan
+        mock_todoist.create_task.assert_called_once()
+        todoist_args = mock_todoist.create_task.call_args[1]
+        self.assertIn("Step 1: Reproduce issue", todoist_args["description"])
+
+        # Verify Switch targeted message was dispatched to Anuj with worker plan
+        mock_switch.send_targeted_message.assert_called_once()
+        switch_args = mock_switch.send_targeted_message.call_args[1]
+        self.assertEqual(switch_args["target_names"], ["Anuj"])
+        self.assertIn("Step 1: Reproduce issue", switch_args["body"])
 
 
 if __name__ == "__main__":

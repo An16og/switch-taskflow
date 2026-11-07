@@ -348,11 +348,12 @@ def build_assigner_card(
     allowed_user_ids: Optional[List[str]] = None,
     allowed_user_names: Optional[List[str]] = None,
     allowed_roles: Optional[List[str]] = None,
-    store: Optional[PendingApprovalStore] = None
+    store: Optional[PendingApprovalStore] = None,
+    action_plan: Optional[str] = None
 ) -> list:
     """Card sent to Assigner for MEDIUM CONFIDENCE tasks.
     
-    Persists proposal in PendingApprovalStore and binds authorization to assigner/roles.
+    Persists proposal with worker checklist in PendingApprovalStore and binds authorization to assigner/roles.
     """
     active_store = store or default_approval_store
     roles = allowed_roles or ["owner", "admin", "lead", "operator"]
@@ -362,7 +363,7 @@ def build_assigner_card(
             action_type="ASSIGNMENT",
             action_summary=action_summary,
             artifact_title=f"Task Assignment: {action_summary}",
-            artifact_content=context_notes or "",
+            artifact_content=action_plan or context_notes or "",
             assignee_id=target_assignee_id,
             assignee_name=target_assignee,
             assigner_id=assigner_id,
@@ -414,6 +415,15 @@ def build_assigner_card(
             ]
         }
     ]
+
+    if action_plan:
+        blocks.append({
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": f"*📋 Proposed AI Action Plan:*\n{action_plan}"
+            }
+        })
 
     context_elements = []
     if permalink:

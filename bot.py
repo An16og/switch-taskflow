@@ -44,6 +44,15 @@ from switch_client import SwitchAgentClient
 from deduplication import TaskDeduplicator
 from security import validate_auto_post_safety, detect_prompt_injection
 from user_resolver import default_user_resolver
+from interactions import handle_confirm_assignment
+
+__all__ = [
+    "handle_triage_message",
+    "handle_worker_message",
+    "handle_confirm_assignment",
+    "run_triage_agent",
+    "run_worker_agent",
+]
 
 # Configure logging
 logging.basicConfig(
