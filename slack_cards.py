@@ -327,49 +327,6 @@ def build_human_todo_card(
     return blocks
 
 
-def build_assignee_card(
-    action_summary: str,
-    assigner_id: str,
-    action_plan: str = "",
-    deadline: Optional[str] = None,
-    context_notes: Optional[str] = None,
-    permalink: Optional[str] = None,
-    channel_id: Optional[str] = None,
-    message_ts: Optional[str] = None,
-    approval_id: Optional[str] = None,
-    room_id: Optional[str] = None,
-    switch_doc_id: Optional[str] = None,
-    assignee_id: Optional[str] = None,
-    assignee_name: Optional[str] = None,
-    assigner_name: Optional[str] = None,
-    allowed_user_ids: Optional[List[str]] = None,
-    allowed_user_names: Optional[List[str]] = None,
-    allowed_roles: Optional[List[str]] = None,
-    store: Optional[PendingApprovalStore] = None
-) -> list:
-    """Backward compatibility alias for build_human_todo_card."""
-    return build_human_todo_card(
-        action_summary=action_summary,
-        assigner_id=assigner_id,
-        action_plan=action_plan,
-        deadline=deadline,
-        context_notes=context_notes,
-        permalink=permalink,
-        channel_id=channel_id,
-        message_ts=message_ts,
-        approval_id=approval_id,
-        room_id=room_id,
-        switch_doc_id=switch_doc_id,
-        assignee_id=assignee_id,
-        assignee_name=assignee_name,
-        assigner_name=assigner_name,
-        allowed_user_ids=allowed_user_ids,
-        allowed_user_names=allowed_user_names,
-        allowed_roles=allowed_roles,
-        store=store
-    )
-
-
 def build_assigner_card(
     action_summary: str,
     target_assignee: str,

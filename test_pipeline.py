@@ -8,9 +8,10 @@ import unittest
 if sys.stdout.encoding != 'utf-8':
     sys.stdout.reconfigure(encoding='utf-8')
 
-from models import TaskTriageResult, ConfidenceLevel, SlackMessage
+from models import TaskTriageResult, ConfidenceLevel, ExecutionType, SlackMessage
 from slack_cards import (
-    build_assignee_card,
+    build_human_todo_card,
+    build_auto_execute_card,
     build_assigner_card,
     build_receipt_blocks,
     parse_button_payload
@@ -30,17 +31,21 @@ class TestTaskPipeline(unittest.TestCase):
             assignee_name="Rohit",
             deadline="Tomorrow 5 PM",
             context_notes="Demo is on Friday",
+            execution_type=ExecutionType.HUMAN_TODO,
             needs_more_context=False
         )
         self.assertTrue(task.is_task)
         self.assertEqual(task.confidence, ConfidenceLevel.HIGH)
         self.assertEqual(task.action_summary, "Fix staging auth token bug")
+        self.assertEqual(task.execution_type, ExecutionType.HUMAN_TODO)
 
-    def test_assignee_card_and_approval_payload(self):
-        """Verify build_assignee_card produces valid blocks with lightweight approval payload."""
-        blocks = build_assignee_card(
+    def test_human_todo_card_and_approval_payload(self):
+        """Verify build_human_todo_card produces valid blocks with lightweight approval payload."""
+        blocks = build_human_todo_card(
             action_summary="Fix staging auth token bug",
             assigner_id="U999999",
+            assignee_id="U123456",
+            assignee_name="Rohit",
             action_plan="1. Reproduce auth token expiry\n2. Patch refresh logic",
             deadline="Tomorrow 5 PM",
             context_notes="Demo is on Friday",
@@ -67,12 +72,26 @@ class TestTaskPipeline(unittest.TestCase):
         self.assertEqual(appr.action_summary, "Fix staging auth token bug")
         self.assertIn("Patch refresh logic", appr.artifact_content)
 
+    def test_auto_execute_card_generation(self):
+        """Verify build_auto_execute_card produces valid blocks."""
+        blocks = build_auto_execute_card(
+            action_summary="Draft v1.3 release notes",
+            artifact_title="Release Notes v1.3",
+            artifact_content="# Release Notes v1.3\n- Feature updates",
+            assigner_id="U999999",
+            category="Release Notes"
+        )
+        self.assertGreaterEqual(len(blocks), 4)
+        action_block = next(b for b in blocks if b.get("type") == "actions")
+        self.assertLess(len(action_block["elements"][0]["value"]), 100)
+
     def test_assigner_card_generation(self):
         """Verify build_assigner_card generation."""
         assigner_blocks = build_assigner_card(
             action_summary="Update documentation",
             target_assignee="Alex",
             target_assignee_id="U555555",
+            assigner_id="U999999",
             deadline="EOD",
             context_notes="Client onboarding",
             permalink="https://slack.com/archives/C123/p123"
