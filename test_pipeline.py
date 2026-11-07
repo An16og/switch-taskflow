@@ -3,6 +3,7 @@
 import json
 import sys
 import unittest
+from pathlib import Path
 
 # Ensure UTF-8 output on Windows console
 if sys.stdout.encoding != 'utf-8':
@@ -168,6 +169,13 @@ class TestTaskPipeline(unittest.TestCase):
         self.assertTrue(config.check_env())
         # Verify that config does not mandate a parallel Bolt socket mode
         self.assertFalse(hasattr(config, "SLACK_APP_TOKEN"))
+
+        # Verify that requirements dropped unused slack-bolt while retaining slack-sdk for cards
+        req_path = Path(__file__).resolve().parent / "requirements.txt"
+        with open(req_path, "r", encoding="utf-8") as f:
+            reqs = f.read()
+            self.assertNotIn("slack-bolt", reqs)
+            self.assertIn("slack-sdk", reqs)
 
 
     def test_open_slack_dm_resolves_dm_channel(self):

@@ -1,5 +1,4 @@
-# Slack Integration & Interactivity
-slack-bolt==1.30.0
+# Slack Card Generation & Optional External Chat Client
 slack-sdk==3.46.0
 
 # Multi-Provider LLM Clients
