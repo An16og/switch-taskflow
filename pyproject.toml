@@ -1,0 +1,50 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "switch-taskflow"
+version = "0.2.0"
+description = "Autonomous Multi-Agent Task Triage & Workroom Execution Engine on Switch AI Core"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [
+    { name = "TaskFlow Team" }
+]
+keywords = [
+    "switch",
+    "multi-agent",
+    "slack",
+    "taskflow",
+    "ai-agents",
+    "triage",
+    "llm-guardrails",
+    "switch-trust"
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Communications :: Chat",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence"
+]
+dependencies = [
+    "slack-bolt==1.30.0",
+    "slack-sdk==3.46.0",
+    "google-genai==2.34.0",
+    "openai==2.54.0",
+    "anthropic==0.125.0",
+    "switch-trust-sdk-py[genai,openai,anthropic]==1.1.1",
+    "pydantic==2.14.3",
+    "requests==2.34.2",
+    "websockets==17.4",
+    "python-dotenv==1.2.4",
+    "PyYAML==6.0.3"
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0"
+]
