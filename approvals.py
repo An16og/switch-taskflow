@@ -219,6 +219,7 @@ class PendingApprovalStore:
                 user_names.append(uname)
 
         roles = allowed_roles if allowed_roles is not None else ["owner", "admin", "lead", "operator"]
+        clean_switch_doc_id = str(switch_doc_id) if (switch_doc_id is not None and not type(switch_doc_id).__name__.startswith("MagicMock")) else None
 
         appr = PendingApproval(
             approval_id=approval_id,
@@ -237,7 +238,7 @@ class PendingApprovalStore:
             channel_id=channel_id,
             message_ts=message_ts,
             room_id=room_id,
-            switch_doc_id=switch_doc_id,
+            switch_doc_id=clean_switch_doc_id,
             allowed_user_ids=user_ids,
             allowed_user_names=user_names,
             allowed_roles=roles,

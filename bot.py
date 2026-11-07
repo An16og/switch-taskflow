@@ -408,10 +408,13 @@ async def handle_worker_message(client: SwitchAgentClient, payload: Dict[str, An
 
         # If success and action was dismiss
         if action == "dismiss":
+            doc_id = res['approval'].switch_doc_id if res.get('approval') else None
+            doc_line = f"• **Room Document:** `{doc_id}` [Dismissed]\n" if doc_id else ""
             dismiss_msg = (
                 f"❌ **TaskFlow Deliverable Dismissed**\n\n"
                 f"• **Approval ID:** `{approval_id}`\n"
                 f"• **Deliverable:** {res['approval'].artifact_title or res['approval'].action_summary if res.get('approval') else 'Task'}\n"
+                f"{doc_line}"
                 f"*(Dismissed by @{sender_name})*"
             )
             await asyncio.to_thread(
@@ -517,6 +520,26 @@ async def handle_worker_message(client: SwitchAgentClient, payload: Dict[str, An
             )
             return
 
+        # Persist draft deliverable natively as a Switch Room Document
+        room_doc = await asyncio.to_thread(
+            client.create_room_document,
+            title=worker_result.artifact_title or handoff.task_title,
+            content=worker_result.artifact_content,
+            room_id=handoff.room_id or client.room_id,
+            metadata={
+                "status": "DRAFT",
+                "task_title": handoff.task_title,
+                "assignee": handoff.assignee_name,
+                "assigner": handoff.assigner_name,
+                "category": handoff.execution_category,
+            }
+        )
+        switch_doc_id = None
+        if isinstance(room_doc, dict):
+            raw_id = room_doc.get("document_id") or room_doc.get("doc_id")
+            if raw_id and isinstance(raw_id, str):
+                switch_doc_id = raw_id
+
         # Wire AUTO_EXECUTE to approval store: Worker posts a short card + approval_id, not the final broadcast!
         approval = default_approval_store.create_approval(
             action_summary=handoff.task_title,
@@ -532,6 +555,7 @@ async def handle_worker_message(client: SwitchAgentClient, payload: Dict[str, An
             context_notes=handoff.context_notes,
             room_id=handoff.room_id or client.room_id or "",
             message_ts=handoff.thread_id,
+            switch_doc_id=switch_doc_id,
         )
 
         # Extract concise preview snippet (skip title headers)
@@ -540,6 +564,7 @@ async def handle_worker_message(client: SwitchAgentClient, payload: Dict[str, An
         if len(preview_text) > 160:
             preview_text = preview_text[:157] + "..."
 
+        doc_info = f"• **Room Document:** `{switch_doc_id}` (Draft saved to Switch Workroom)\n" if switch_doc_id else ""
         short_proposal_card = (
             f"⚡ **TaskFlow Deliverable Drafted (Pending Approval)**\n\n"
             f"• **Deliverable:** {worker_result.artifact_title or handoff.task_title}\n"
@@ -547,6 +572,7 @@ async def handle_worker_message(client: SwitchAgentClient, payload: Dict[str, An
             f"• **Assignee:** @{handoff.assignee_name}\n"
             f"• **Assigned by:** @{handoff.assigner_name}\n"
             f"• **Approval ID:** `{approval.approval_id}`\n"
+            f"{doc_info}"
             f"• **Status:** `PENDING_APPROVAL`\n\n"
             f"📝 **Preview:**\n> {preview_text}\n\n"
             f"👉 **To approve & publish to room:**\n`@taskflow-worker approve {approval.approval_id}`\n\n"

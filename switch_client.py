@@ -1,11 +1,13 @@
 import asyncio
 import json
 import logging
+import re
 import uuid
 from typing import Callable, Awaitable, Optional, Dict, Any, List
 
 import requests
 import websockets
+from room_documents import default_room_document_store, RoomDocumentStore, DocumentStatus
 
 logger = logging.getLogger("SwitchClient")
 
@@ -45,6 +47,7 @@ class SwitchAgentClient:
         self._ws = None
         self._running = False
         self._message_handlers: List[Callable[[Dict[str, Any]], Awaitable[None]]] = []
+        self.document_store: RoomDocumentStore = default_room_document_store
 
     @property
     def auth_headers(self) -> Dict[str, str]:
@@ -749,3 +752,223 @@ class SwitchAgentClient:
     def is_slack_connected(self, room_id: Optional[str] = None) -> bool:
         """Returns True if Switch has an active Slack collaboration bridge connected to this room."""
         return self.get_room_bridge_info(room_id).get("is_slack", False)
+
+    def create_room_document(
+        self,
+        title: Optional[str] = None,
+        content: str = "",
+        name: Optional[str] = None,
+        description: Optional[str] = None,
+        instructions: Optional[str] = None,
+        room_id: Optional[str] = None,
+        doc_id: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Creates an internal document scoped to the connected room on Switch.
+        
+        Attempts live Switch Core endpoint (POST /agents/{agent_id}/ops/create_room_document),
+        with transparent local fallback to RoomDocumentStore so drafts are never lost.
+        """
+        target_room = room_id or self.room_id or "default_room"
+        doc_title = title or name or "Draft Deliverable"
+        slug = re.sub(r'[^a-zA-Z0-9_\-]', '-', doc_title.lower()).strip('-')[:35]
+        doc_name = name or (f"{slug}-{uuid.uuid4().hex[:6]}" if slug else f"doc-{uuid.uuid4().hex[:8]}")
+        doc_desc = description or f"Draft deliverable: {doc_title}"
+        doc_inst = instructions or "TaskFlow autonomous deliverable draft awaiting room review."
+
+        server_doc_id = None
+        if self.agent_id:
+            payload = {
+                "name": doc_name,
+                "description": doc_desc,
+                "instructions": doc_inst,
+                "content": content,
+            }
+            headers = self.op_headers.copy()
+            if target_room:
+                headers["X-Switch-Room-Id"] = target_room
+            try:
+                resp = requests.post(
+                    f"{self.server_url}/agents/{self.agent_id}/ops/create_room_document",
+                    headers=headers,
+                    json=payload,
+                    timeout=10,
+                )
+                if resp.status_code == 200:
+                    res = resp.json().get("result", {})
+                    server_doc_id = res.get("document_id") or resp.json().get("document_id")
+                    logger.info("Created Switch room document on server: %s", server_doc_id)
+                else:
+                    logger.debug("Server create_room_document returned %s: %s", resp.status_code, resp.text)
+            except Exception as e:
+                logger.debug("Server create_room_document call failed/skipped: %s", e)
+
+        assigned_id = server_doc_id or doc_id or f"doc_{uuid.uuid4().hex[:12]}"
+        meta = dict(metadata or {})
+        if server_doc_id:
+            meta["server_synced"] = True
+
+        status_str = meta.get("status", "DRAFT")
+        doc = self.document_store.create_document(
+            title=doc_title,
+            content=content,
+            name=doc_name,
+            description=doc_desc,
+            instructions=doc_inst,
+            room_id=target_room,
+            doc_id=assigned_id,
+            status=status_str,
+            created_by=self.agent_name,
+            metadata=meta,
+        )
+        return doc.to_dict()
+
+    def update_room_document(
+        self,
+        doc_id: Optional[str] = None,
+        document_id: Optional[str] = None,
+        content: Optional[str] = None,
+        title: Optional[str] = None,
+        name: Optional[str] = None,
+        description: Optional[str] = None,
+        instructions: Optional[str] = None,
+        room_id: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Updates a room-scoped document on Switch Core and local persistent store."""
+        target_id = document_id or doc_id
+        if not target_id:
+            logger.warning("update_room_document called without doc_id or document_id")
+            return {}
+
+        target_room = room_id or self.room_id
+
+        # Attempt server update if agent registered
+        if self.agent_id:
+            payload: Dict[str, Any] = {"document_id": target_id}
+            if name is not None:
+                payload["name"] = name
+            if description is not None:
+                payload["description"] = description
+            if instructions is not None:
+                payload["instructions"] = instructions
+            if content is not None:
+                payload["content"] = content
+
+            headers = self.op_headers.copy()
+            if target_room:
+                headers["X-Switch-Room-Id"] = target_room
+            try:
+                resp = requests.post(
+                    f"{self.server_url}/agents/{self.agent_id}/ops/update_room_document",
+                    headers=headers,
+                    json=payload,
+                    timeout=10,
+                )
+                if resp.status_code == 200:
+                    logger.info("Updated Switch room document on server: %s", target_id)
+            except Exception as e:
+                logger.debug("Server update_room_document call failed/skipped: %s", e)
+
+        status_val = (metadata or {}).get("status")
+        updated_by = (metadata or {}).get("approved_by") or (metadata or {}).get("dismissed_by") or self.agent_name
+        doc = self.document_store.update_document(
+            doc_id=target_id,
+            content=content,
+            title=title,
+            name=name,
+            description=description,
+            instructions=instructions,
+            status=status_val,
+            updated_by=updated_by,
+            metadata=metadata,
+        )
+        if doc:
+            return doc.to_dict()
+
+        return {"document_id": target_id, "doc_id": target_id, "status": status_val or "UPDATED"}
+
+    def get_room_document(
+        self,
+        doc_id: Optional[str] = None,
+        document_id: Optional[str] = None,
+        room_id: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Retrieves a room document by its ID from local store or Switch Core load_internal_documents."""
+        target_id = document_id or doc_id
+        if not target_id:
+            return None
+
+        # Check local store first
+        local_doc = self.document_store.get_document(target_id, room_id=room_id)
+        if local_doc:
+            return local_doc.to_dict()
+
+        # Try server load_internal_documents
+        if self.agent_id:
+            headers = self.op_headers.copy()
+            if room_id or self.room_id:
+                headers["X-Switch-Room-Id"] = room_id or self.room_id
+            try:
+                resp = requests.post(
+                    f"{self.server_url}/agents/{self.agent_id}/ops/load_internal_documents",
+                    headers=headers,
+                    json={"ids": [target_id]},
+                    timeout=5,
+                )
+                if resp.status_code == 200:
+                    docs = resp.json().get("result", [])
+                    if docs and isinstance(docs, list):
+                        d = docs[0]
+                        return {
+                            "document_id": d.get("id") or target_id,
+                            "doc_id": d.get("id") or target_id,
+                            "name": d.get("name", ""),
+                            "title": d.get("name", ""),
+                            "description": d.get("description", ""),
+                            "content": d.get("content", ""),
+                            "status": "PUBLISHED",
+                        }
+            except Exception as e:
+                logger.debug("Server load_internal_documents failed: %s", e)
+
+        return None
+
+    def list_room_documents(
+        self,
+        room_id: Optional[str] = None,
+        status: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """Lists room documents matching the specified room and/or status."""
+        target_room = room_id or self.room_id
+        docs = self.document_store.list_documents(room_id=target_room, status=status)
+        return [d.to_dict() for d in docs]
+
+    def delete_room_document(
+        self,
+        doc_id: Optional[str] = None,
+        document_id: Optional[str] = None,
+        room_id: Optional[str] = None,
+    ) -> bool:
+        """Deletes a room document on Switch Core and local persistent store."""
+        target_id = document_id or doc_id
+        if not target_id:
+            return False
+
+        if self.agent_id:
+            headers = self.op_headers.copy()
+            if room_id or self.room_id:
+                headers["X-Switch-Room-Id"] = room_id or self.room_id
+            try:
+                resp = requests.post(
+                    f"{self.server_url}/agents/{self.agent_id}/ops/delete_room_document",
+                    headers=headers,
+                    json={"document_id": target_id},
+                    timeout=5,
+                )
+                if resp.status_code == 200:
+                    logger.info("Deleted room document on server: %s", target_id)
+            except Exception as e:
+                logger.debug("Server delete_room_document failed: %s", e)
+
+        return self.document_store.delete_document(target_id)

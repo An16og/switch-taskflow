@@ -177,30 +177,36 @@ def run_simulation(choice: str):
         room_id=SWITCH_ROOM_ID
     )
 
+    room_doc = None
     if triage.execution_type == ExecutionType.AUTO_EXECUTE:
         print(f"   ⚡ Task Auto-Executed! Artifact: '{worker_res.artifact_title}'")
         print(f"\n--- Artifact Preview ---\n{worker_res.artifact_content[:300]}...\n-----------------------")
+
+        # Persist draft as Switch room document
+        if switch_client and hasattr(switch_client, "create_room_document"):
+            room_doc = switch_client.create_room_document(
+                title=worker_res.artifact_title or triage.action_summary,
+                content=worker_res.artifact_content,
+                room_id=SWITCH_ROOM_ID or "simulated_room",
+                metadata={"status": "DRAFT", "task_title": triage.action_summary}
+            )
+            print(f"   📄 Persisted draft as Switch Room Document: {room_doc.get('doc_id')}")
+
         blocks = build_auto_execute_card(
             action_summary=triage.action_summary,
             artifact_title=worker_res.artifact_title,
             artifact_content=worker_res.artifact_content,
             assigner_id=scenario["messages"][0].user_id,
             category=triage.execution_category,
-            permalink="https://slack.com"
+            permalink="https://slack.com",
+            room_id=SWITCH_ROOM_ID,
+            switch_doc_id=room_doc.get("doc_id") if room_doc else None,
         )
     room_task = None
     todoist_url = None
     todoist_error = None
 
-    if triage.execution_type == ExecutionType.AUTO_EXECUTE:
-        blocks = build_auto_execute_card(
-            action_summary=triage.action_summary,
-            deliverable_content=worker_res.artifact_content,
-            artifact_title=worker_res.artifact_title,
-            category=triage.execution_category,
-            permalink="https://slack.com"
-        )
-    else:
+    if triage.execution_type != ExecutionType.AUTO_EXECUTE:
         print(f"   📌 Human Task Prepared with Action Checklist:\n{worker_res.artifact_content}")
         
         # 1. Native Switch Room Task Tracking
@@ -259,8 +265,10 @@ def run_simulation(choice: str):
         print(f"🎯 [Switch Native] Using send_targeted_message for @{MY_USER_NAME} in Room '{SWITCH_ROOM_ID}'...")
         try:
             if triage.execution_type == ExecutionType.AUTO_EXECUTE:
+                doc_str = f"• **Room Document:** `{room_doc.get('doc_id')}` (Draft saved to Switch Workroom)\n\n" if room_doc else ""
                 switch_body = (
                     f"@{MY_USER_NAME} ⚡ **[AUTO_EXECUTE] TaskFlow Deliverable: {triage.action_summary}**\n\n"
+                    f"{doc_str}"
                     f"{worker_res.artifact_content}\n\n"
                     f"*(Delivered natively via Switch send_targeted_message)*"
                 )

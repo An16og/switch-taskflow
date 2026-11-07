@@ -1,0 +1,392 @@
+"""Unit tests for Switch Room Document Persistence (create_room_document / update_room_document).
+
+Verifies:
+1. Native RoomDocument and RoomDocumentStore storage, serialization, versioning, and listing.
+2. SwitchAgentClient create_room_document, update_room_document, get_room_document, and list_room_documents.
+3. Resilient fallback to RoomDocumentStore when Switch Core endpoint is offline.
+4. End-to-end draft lifecycle in bot.py:
+   - Worker AUTO_EXECUTE persists deliverable as a Switch room document (DRAFT).
+   - Proposal card surfaces Switch Document ID to the room.
+   - @taskflow-worker approve updates room document status to PUBLISHED.
+   - @taskflow-worker dismiss updates room document status to DISMISSED.
+"""
+
+import os
+import json
+import uuid
+import time
+import asyncio
+import unittest
+from unittest.mock import MagicMock, patch
+
+from room_documents import (
+    RoomDocument,
+    RoomDocumentStore,
+    DocumentStatus,
+    default_room_document_store,
+)
+from switch_client import SwitchAgentClient
+from approvals import PendingApprovalStore, default_approval_store, ApprovalStatus
+from interactions import InteractionDispatcher
+from models import (
+    ConfidenceLevel,
+    ExecutionType,
+    TaskHandoffMessage,
+    WorkerExecutionResult,
+)
+from bot import handle_worker_message
+
+
+class TestRoomDocuments(unittest.TestCase):
+
+    def setUp(self):
+        self.test_store_path = f"test_room_documents_{uuid.uuid4().hex[:8]}.json"
+        self.doc_store = RoomDocumentStore(storage_path=self.test_store_path)
+
+    def tearDown(self):
+        if os.path.exists(self.test_store_path):
+            os.remove(self.test_store_path)
+        tmp = f"{self.test_store_path}.tmp"
+        if os.path.exists(tmp):
+            os.remove(tmp)
+
+    def test_room_document_model_and_store(self):
+        """Tests core RoomDocument lifecycle in RoomDocumentStore."""
+        doc = self.doc_store.create_document(
+            title="Q3 Security Architecture Spec",
+            content="# Q3 Security Spec\n- Zero trust network\n- mTLS",
+            name="q3-sec-spec",
+            description="High-level security spec for Q3",
+            room_id="room_sec_101",
+            status="DRAFT",
+            created_by="taskflow-worker",
+            metadata={"ticket": "SEC-402"},
+        )
+
+        self.assertIsNotNone(doc.doc_id)
+        self.assertEqual(doc.document_id, doc.doc_id)
+        self.assertEqual(doc.title, "Q3 Security Architecture Spec")
+        self.assertEqual(doc.status, DocumentStatus.DRAFT)
+        self.assertEqual(doc.version, 1)
+
+        # Verify persistence and retrieval
+        retrieved = self.doc_store.get_document(doc.doc_id)
+        self.assertIsNotNone(retrieved)
+        self.assertEqual(retrieved.content, doc.content)
+        self.assertEqual(retrieved.metadata.get("ticket"), "SEC-402")
+
+        # Test Update
+        updated = self.doc_store.update_document(
+            doc_id=doc.doc_id,
+            content="# Q3 Security Spec (Approved)\n- Zero trust network\n- mTLS\n- Audit logs",
+            status="PUBLISHED",
+            updated_by="Alice",
+            metadata={"approved_by": "Alice"},
+        )
+        self.assertIsNotNone(updated)
+        self.assertEqual(updated.status, DocumentStatus.PUBLISHED)
+        self.assertEqual(updated.version, 2)
+        self.assertEqual(updated.updated_by, "Alice")
+        self.assertIn("Audit logs", updated.content)
+
+        # Test Listing by room and status
+        drafts = self.doc_store.list_documents(room_id="room_sec_101", status="DRAFT")
+        self.assertEqual(len(drafts), 0)
+        published = self.doc_store.list_documents(room_id="room_sec_101", status="PUBLISHED")
+        self.assertEqual(len(published), 1)
+
+        # Test Serialization
+        doc_dict = updated.to_dict()
+        self.assertEqual(doc_dict["document_id"], doc.doc_id)
+        self.assertEqual(doc_dict["status"], "PUBLISHED")
+
+        reconstructed = RoomDocument.from_dict(doc_dict)
+        self.assertEqual(reconstructed.doc_id, doc.doc_id)
+        self.assertEqual(reconstructed.title, updated.title)
+
+        # Test Delete
+        self.assertTrue(self.doc_store.delete_document(doc.doc_id))
+        self.assertIsNone(self.doc_store.get_document(doc.doc_id))
+
+    def test_switch_agent_client_document_ops(self):
+        """Tests SwitchAgentClient create, update, get, list, and delete room document operations."""
+        client = SwitchAgentClient(
+            server_url="http://127.0.0.1:52422",
+            agent_id="test_agent_1",
+            api_key="test_key_1",
+            room_id="test_room_docs",
+            agent_name="taskflow-worker",
+        )
+        client.document_store = self.doc_store
+
+        # 1. Create Room Document
+        created = client.create_room_document(
+            title="Sprint 44 Release Notes",
+            content="# Sprint 44 Release Notes\n- Fixed login bug\n- New dashboard",
+            room_id="test_room_docs",
+            metadata={"status": "DRAFT", "author": "WorkerAgent"}
+        )
+
+        doc_id = created.get("doc_id") or created.get("document_id")
+        self.assertIsNotNone(doc_id)
+        self.assertEqual(created.get("title"), "Sprint 44 Release Notes")
+        self.assertEqual(created.get("status"), "DRAFT")
+
+        # 2. Get Room Document
+        fetched = client.get_room_document(doc_id=doc_id, room_id="test_room_docs")
+        self.assertIsNotNone(fetched)
+        self.assertEqual(fetched["doc_id"], doc_id)
+        self.assertIn("Fixed login bug", fetched["content"])
+
+        # 3. Update Room Document
+        updated = client.update_room_document(
+            doc_id=doc_id,
+            description="Sprint 44 Release Notes (Published to Workroom)",
+            metadata={"status": "PUBLISHED", "approved_by": "LeadEngineer"}
+        )
+        self.assertEqual(updated.get("status"), "PUBLISHED")
+        self.assertEqual(updated.get("description"), "Sprint 44 Release Notes (Published to Workroom)")
+
+        # 4. List Room Documents
+        all_docs = client.list_room_documents(room_id="test_room_docs")
+        self.assertEqual(len(all_docs), 1)
+        self.assertEqual(all_docs[0]["doc_id"], doc_id)
+
+        published_docs = client.list_room_documents(room_id="test_room_docs", status="PUBLISHED")
+        self.assertEqual(len(published_docs), 1)
+
+        draft_docs = client.list_room_documents(room_id="test_room_docs", status="DRAFT")
+        self.assertEqual(len(draft_docs), 0)
+
+        # 5. Delete Room Document
+        deleted = client.delete_room_document(doc_id=doc_id, room_id="test_room_docs")
+        self.assertTrue(deleted)
+        self.assertIsNone(client.get_room_document(doc_id=doc_id))
+
+    def test_switch_agent_client_server_integration_and_fallback(self):
+        """Verifies SwitchAgentClient interacts with server ops and falls back gracefully on error."""
+        client = SwitchAgentClient(
+            server_url="http://127.0.0.1:52422",
+            agent_id="test_agent_server",
+            api_key="test_key_server",
+            room_id="room_server_test",
+        )
+        client.document_store = self.doc_store
+
+        # Case 1: Server endpoint returns 200 OK with server-assigned UUID
+        server_uuid = str(uuid.uuid4())
+        mock_resp_200 = MagicMock()
+        mock_resp_200.status_code = 200
+        mock_resp_200.json.return_value = {"result": {"document_id": server_uuid}}
+
+        with patch("requests.post", return_value=mock_resp_200):
+            created = client.create_room_document(
+                title="Server-Synced Architecture Doc",
+                content="# Architecture\nServer synced content",
+                room_id="room_server_test",
+            )
+            self.assertEqual(created["doc_id"], server_uuid)
+            self.assertEqual(created["document_id"], server_uuid)
+            self.assertTrue(created["metadata"].get("server_synced"))
+
+        # Case 2: Server endpoint raises ConnectionError / returns 500
+        mock_resp_500 = MagicMock()
+        mock_resp_500.status_code = 500
+        mock_resp_500.text = "Internal Server Error"
+
+        with patch("requests.post", return_value=mock_resp_500):
+            fallback_created = client.create_room_document(
+                title="Offline Fallback Document",
+                content="# Fallback Content",
+                room_id="room_server_test",
+            )
+            self.assertIsNotNone(fallback_created["doc_id"])
+            self.assertFalse(fallback_created["metadata"].get("server_synced", False))
+            self.assertEqual(fallback_created["title"], "Offline Fallback Document")
+
+            # Document is still reliably saved in store
+            stored_doc = self.doc_store.get_document(fallback_created["doc_id"])
+            self.assertIsNotNone(stored_doc)
+
+    def test_auto_execute_persists_draft_and_surfaces_doc_id(self):
+        """Verifies that WorkerAgent AUTO_EXECUTE creates a Switch room document draft and includes it in proposal."""
+        client = SwitchAgentClient(
+            server_url="http://127.0.0.1:52422",
+            agent_id="test_worker_agent",
+            api_key="test_worker_key",
+            room_id="room_docs_pipeline",
+            agent_name="taskflow-worker",
+        )
+        client.document_store = self.doc_store
+        client.post_message = MagicMock()
+
+        handoff = TaskHandoffMessage(
+            task_title="Draft Release Notes v2.1.0",
+            execution_type=ExecutionType.AUTO_EXECUTE,
+            confidence=ConfidenceLevel.HIGH,
+            assignee_name="Alice",
+            assignee_id="U_ALICE",
+            assigner_name="Priya",
+            assigner_id="U_PRIYA",
+            room_id="room_docs_pipeline",
+            thread_id="msg_draft_1",
+            requester_name="Priya",
+        )
+
+        payload = {
+            "body": f"@taskflow-worker <!-- TASKFLOW_HANDOFF: {handoff.model_dump_json()} -->",
+            "sender": "agent_triage_1",
+            "sender_name": "taskflow-triage",
+            "room_id": "room_docs_pipeline",
+            "thread_id": "msg_draft_1",
+        }
+
+        with patch("bot.worker_executor.execute_task") as mock_exec:
+            mock_exec.return_value = WorkerExecutionResult(
+                artifact_title="Release Notes v2.1.0",
+                artifact_content="# Release Notes v2.1.0\n- Feature X\n- Bugfix Y",
+                execution_notes="Generated release notes"
+            )
+
+            asyncio.run(handle_worker_message(client, payload))
+
+            # 1. Verify a room document was created in the store
+            docs = self.doc_store.list_documents(room_id="room_docs_pipeline")
+            self.assertEqual(len(docs), 1)
+            draft_doc = docs[0]
+            self.assertEqual(draft_doc.title, "Release Notes v2.1.0")
+            self.assertEqual(draft_doc.status, DocumentStatus.DRAFT)
+            self.assertIn("Feature X", draft_doc.content)
+
+            # 2. Verify proposal card posted to room includes the Room Document ID
+            client.post_message.assert_called_once()
+            call_kwargs = client.post_message.call_args[1]
+            proposal_body = call_kwargs["body"]
+
+            self.assertIn("TaskFlow Deliverable Drafted (Pending Approval)", proposal_body)
+            self.assertIn("Room Document:", proposal_body)
+            self.assertIn(draft_doc.doc_id, proposal_body)
+            self.assertIn("Draft saved to Switch Workroom", proposal_body)
+
+    def test_approve_command_updates_room_document_to_published(self):
+        """Verifies that @taskflow-worker approve updates the room document to PUBLISHED."""
+        client = SwitchAgentClient(
+            server_url="http://127.0.0.1:52422",
+            agent_id="test_worker_agent",
+            api_key="test_worker_key",
+            room_id="room_docs_publish",
+            agent_name="taskflow-worker",
+        )
+        client.document_store = self.doc_store
+        client.post_message = MagicMock()
+
+        # 1. Create a draft room document
+        doc = self.doc_store.create_document(
+            title="Q4 Postmortem Report",
+            content="# Outage Postmortem\nRedis master failover completed in 42s.",
+            room_id="room_docs_publish",
+            status="DRAFT",
+        )
+
+        # 2. Create pending approval referencing the switch_doc_id
+        appr = default_approval_store.create_approval(
+            action_summary="Q4 Postmortem Report",
+            artifact_content=doc.content,
+            artifact_title=doc.title,
+            action_type="AUTO_EXECUTE",
+            assignee_name="Alice",
+            assignee_id="U_ALICE",
+            assigner_name="Priya",
+            assigner_id="U_PRIYA",
+            room_id="room_docs_publish",
+            switch_doc_id=doc.doc_id,
+        )
+
+        # 3. Simulate Alice running `@taskflow-worker approve <appr_id>`
+        cmd_payload = {
+            "body": f"@taskflow-worker approve {appr.approval_id}",
+            "sender": "U_ALICE",
+            "sender_name": "Alice",
+            "room_id": "room_docs_publish",
+            "thread_id": "msg_cmd_1",
+        }
+
+        asyncio.run(handle_worker_message(client, cmd_payload))
+
+        # 4. Verify room document status transitioned to PUBLISHED
+        updated_doc = self.doc_store.get_document(doc.doc_id)
+        self.assertIsNotNone(updated_doc)
+        self.assertEqual(updated_doc.status, DocumentStatus.PUBLISHED)
+        self.assertEqual(updated_doc.updated_by, "Alice")
+
+        # 5. Verify room broadcast contains Room Document ID with [Published]
+        client.post_message.assert_called()
+        broadcast_call = client.post_message.call_args_list[0][1]
+        broadcast_body = broadcast_call["body"]
+        self.assertIn("Room Document:", broadcast_body)
+        self.assertIn(doc.doc_id, broadcast_body)
+        self.assertIn("[Published]", broadcast_body)
+
+    def test_dismiss_command_updates_room_document_to_dismissed(self):
+        """Verifies that @taskflow-worker dismiss updates the room document to DISMISSED."""
+        client = SwitchAgentClient(
+            server_url="http://127.0.0.1:52422",
+            agent_id="test_worker_agent",
+            api_key="test_worker_key",
+            room_id="room_docs_dismiss",
+            agent_name="taskflow-worker",
+        )
+        client.document_store = self.doc_store
+        client.post_message = MagicMock()
+
+        # 1. Create a draft room document
+        doc = self.doc_store.create_document(
+            title="Unneeded Internal RFC",
+            content="# RFC: Deprecate v1 endpoints",
+            room_id="room_docs_dismiss",
+            status="DRAFT",
+        )
+
+        # 2. Create pending approval referencing the switch_doc_id
+        appr = default_approval_store.create_approval(
+            action_summary="Unneeded Internal RFC",
+            artifact_content=doc.content,
+            artifact_title=doc.title,
+            action_type="AUTO_EXECUTE",
+            assignee_name="Alice",
+            assignee_id="U_ALICE",
+            assigner_name="Priya",
+            assigner_id="U_PRIYA",
+            room_id="room_docs_dismiss",
+            switch_doc_id=doc.doc_id,
+        )
+
+        # 3. Simulate Priya running `@taskflow-worker dismiss <appr_id>`
+        cmd_payload = {
+            "body": f"@taskflow-worker dismiss {appr.approval_id}",
+            "sender": "U_PRIYA",
+            "sender_name": "Priya",
+            "room_id": "room_docs_dismiss",
+            "thread_id": "msg_cmd_2",
+        }
+
+        asyncio.run(handle_worker_message(client, cmd_payload))
+
+        # 4. Verify room document status transitioned to DISMISSED
+        updated_doc = self.doc_store.get_document(doc.doc_id)
+        self.assertIsNotNone(updated_doc)
+        self.assertEqual(updated_doc.status, DocumentStatus.DISMISSED)
+        self.assertEqual(updated_doc.updated_by, "Priya")
+
+        # 5. Verify dismissal notification surfaces Room Document ID
+        client.post_message.assert_called()
+        dismiss_call = client.post_message.call_args_list[0][1]
+        dismiss_body = dismiss_call["body"]
+        self.assertIn("TaskFlow Deliverable Dismissed", dismiss_body)
+        self.assertIn("Room Document:", dismiss_body)
+        self.assertIn(doc.doc_id, dismiss_body)
+        self.assertIn("[Dismissed]", dismiss_body)
+
+
+if __name__ == "__main__":
+    unittest.main()

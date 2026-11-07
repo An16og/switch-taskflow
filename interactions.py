@@ -251,11 +251,25 @@ class InteractionDispatcher:
                 except Exception as e:
                     logger.warning("Failed recording native room task on approval: %s", e)
 
+            # Update Switch Room Document status to PUBLISHED if present
+            if appr.switch_doc_id and self.switch_client and hasattr(self.switch_client, "update_room_document"):
+                try:
+                    self.switch_client.update_room_document(
+                        doc_id=appr.switch_doc_id,
+                        description=f"Published deliverable: {appr.artifact_title or appr.action_summary}",
+                        instructions="Approved and published Switch room document",
+                        metadata={"status": "PUBLISHED", "approved_by": user_name or user_id}
+                    )
+                except Exception as e:
+                    logger.warning("Failed updating room document on approval: %s", e)
+
             # Execute side effect: post to room/channel if AUTO_EXECUTE
             if auto_post_on_approval and action_type == "approve" and self.switch_client and hasattr(self.switch_client, "post_message"):
                 try:
+                    doc_line = f"• **Room Document:** `{appr.switch_doc_id}` [Published]\n\n" if appr.switch_doc_id else ""
                     post_body = (
                         f"📄 **{appr.artifact_title or appr.action_summary}**\n\n"
+                        f"{doc_line}"
                         f"{appr.artifact_content}\n\n"
                         f"*(Approved & posted by @{user_name or user_id})*"
                     )
@@ -346,6 +360,36 @@ class InteractionDispatcher:
 
         elif action_type in ("dismiss", "reject"):
             target_status = ApprovalStatus.DISMISSED
+            if appr.switch_doc_id and self.switch_client and hasattr(self.switch_client, "update_room_document"):
+                try:
+                    self.switch_client.update_room_document(
+                        doc_id=appr.switch_doc_id,
+                        description=f"Dismissed deliverable: {appr.artifact_title or appr.action_summary}",
+                        instructions="Draft dismissed by reviewer",
+                        metadata={"status": "DISMISSED", "dismissed_by": user_name or user_id}
+                    )
+                except Exception as e:
+                    logger.warning("Failed updating room document on dismissal: %s", e)
+        elif action_type in ("save_room_doc", "save_doc"):
+            target_status = ApprovalStatus.APPROVED
+            if self.switch_client and hasattr(self.switch_client, "create_room_document"):
+                try:
+                    if not appr.switch_doc_id:
+                        doc = self.switch_client.create_room_document(
+                            title=appr.artifact_title or appr.action_summary,
+                            content=appr.artifact_content,
+                            room_id=appr.room_id,
+                            metadata={"status": "PUBLISHED", "saved_by": user_name or user_id}
+                        )
+                        appr.switch_doc_id = doc.get("doc_id") or doc.get("document_id")
+                    else:
+                        self.switch_client.update_room_document(
+                            doc_id=appr.switch_doc_id,
+                            description=f"Saved room deliverable: {appr.artifact_title or appr.action_summary}",
+                            metadata={"status": "PUBLISHED", "saved_by": user_name or user_id}
+                        )
+                except Exception as e:
+                    logger.warning("Failed saving room document: %s", e)
         else:
             target_status = ApprovalStatus.APPROVED
 
