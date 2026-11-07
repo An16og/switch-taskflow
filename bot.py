@@ -43,6 +43,7 @@ from todoist_client import TodoistClient
 from switch_client import SwitchAgentClient
 from deduplication import TaskDeduplicator
 from security import validate_auto_post_safety, detect_prompt_injection
+from user_resolver import default_user_resolver
 
 # Configure logging
 logging.basicConfig(
@@ -228,13 +229,24 @@ async def handle_triage_message(client: SwitchAgentClient, payload: Dict[str, An
 
     # TASK DETECTED!
     # Instead of an in-process Python call, hand off via a Switch targeted room message
-    assignee = triage_result.assignee_name or sender_name
+    participants = await asyncio.to_thread(client.list_participants, room_id)
+    assignee_name, assignee_id = default_user_resolver.resolve_assignee(
+        triage_assignee_name=triage_result.assignee_name,
+        triage_assignee_id=triage_result.assignee_id,
+        message_text=body,
+        sender_id=sender,
+        sender_name=sender_name,
+        participants=participants,
+    )
+
     handoff = TaskHandoffMessage(
         task_title=triage_result.action_summary,
         execution_type=triage_result.execution_type,
         confidence=triage_result.confidence,
-        assignee_name=assignee,
+        assignee_name=assignee_name,
+        assignee_id=assignee_id,
         assigner_name=sender_name,
+        assigner_id=sender,
         deadline=triage_result.deadline,
         context_notes=triage_result.context_notes,
         execution_category=triage_result.execution_category,
@@ -332,6 +344,7 @@ async def handle_worker_message(client: SwitchAgentClient, payload: Dict[str, An
         execution_type=handoff.execution_type,
         execution_category=handoff.execution_category or "General Task",
         assignee_name=handoff.assignee_name,
+        assignee_id=handoff.assignee_id,
         deadline=handoff.deadline,
     )
     context_msgs = [SlackMessage(**m) for m in (handoff.recent_context or [])]
@@ -414,6 +427,7 @@ async def handle_worker_message(client: SwitchAgentClient, payload: Dict[str, An
             f"🎯 **Task Handed Off & Tracked**\n\n"
             f"**Task:** {handoff.task_title}\n"
             f"**Assignee:** @{handoff.assignee_name}\n"
+            f"**Assigned by:** @{handoff.assigner_name}\n"
             f"**Due Date:** {handoff.deadline or 'Not specified'}\n"
             f"{tracker_line}"
             f"📋 **Action Checklist:**\n{worker_result.artifact_content}\n\n"

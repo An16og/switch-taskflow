@@ -60,7 +60,9 @@ class TaskHandoffMessage(BaseModel):
     execution_type: ExecutionType
     confidence: ConfidenceLevel
     assignee_name: Optional[str] = None
+    assignee_id: Optional[str] = None
     assigner_name: Optional[str] = None
+    assigner_id: Optional[str] = None
     deadline: Optional[str] = None
     context_notes: Optional[str] = None
     execution_category: Optional[str] = "General Task"

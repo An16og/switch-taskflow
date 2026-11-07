@@ -488,6 +488,88 @@ class SwitchAgentClient:
 
         return roles
 
+    def list_participants(self, room_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        """
+        Lists participants (connected users, role holders, and agents) in the Switch room.
+        Attempts ops/list_participants, falling back to get_room_detail participant extraction.
+        """
+        target_room = room_id or self.room_id
+        if not target_room or not self.agent_id:
+            return []
+
+        participants: List[Dict[str, Any]] = []
+        seen_names = set()
+
+        # 1. Try Switch ops/list_participants
+        try:
+            resp = requests.post(
+                f"{self.server_url}/agents/{self.agent_id}/ops/list_participants",
+                headers=self.auth_headers,
+                json={},
+                timeout=3,
+            )
+            if resp.status_code == 200:
+                result = resp.json().get("result", [])
+                if isinstance(result, list):
+                    for p in result:
+                        p_name = p.get("name") or p.get("username") or p.get("display_name")
+                        if p_name and p_name.lower() not in seen_names:
+                            seen_names.add(p_name.lower())
+                            participants.append({
+                                "id": p.get("id") or p.get("user_id"),
+                                "name": p_name,
+                                "kind": p.get("kind", "user"),
+                                "roles": p.get("roles", []),
+                            })
+        except Exception as e:
+            logger.debug("ops/list_participants call skipped/failed: %s", e)
+
+        # 2. Extract participants from get_room_detail
+        try:
+            resp = requests.post(
+                f"{self.server_url}/agents/{self.agent_id}/ops/get_room_detail",
+                headers=self.auth_headers,
+                json={"room_id": target_room},
+                timeout=5,
+            )
+            if resp.status_code == 200:
+                res = resp.json().get("result", {})
+                for u_name in res.get("connected_user_names", []):
+                    if u_name and u_name.lower() not in seen_names:
+                        seen_names.add(u_name.lower())
+                        participants.append({
+                            "id": None,
+                            "name": u_name,
+                            "kind": "user",
+                            "roles": [],
+                        })
+                for r in res.get("roles", []):
+                    r_name = r.get("name", "")
+                    for holder in r.get("held_by", []):
+                        h_name = holder.get("name")
+                        h_id = holder.get("id")
+                        if h_name and h_name.lower() not in seen_names:
+                            seen_names.add(h_name.lower())
+                            participants.append({
+                                "id": h_id,
+                                "name": h_name,
+                                "kind": "user",
+                                "roles": [r_name],
+                            })
+                creator = res.get("creator_name") or res.get("owner_name")
+                if creator and creator.lower() not in seen_names:
+                    seen_names.add(creator.lower())
+                    participants.append({
+                        "id": None,
+                        "name": creator,
+                        "kind": "user",
+                        "roles": ["owner"],
+                    })
+        except Exception as e:
+            logger.debug("Failed extracting participants from room detail: %s", e)
+
+        return participants
+
     def get_room_bridge_info(self, room_id: Optional[str] = None) -> Dict[str, Any]:
         """
         Inspects Switch room metadata to determine if an external collaboration

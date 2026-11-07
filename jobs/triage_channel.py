@@ -35,6 +35,7 @@ from agents.worker_agent import WorkerAgent
 from todoist_client import TodoistClient
 from security import sanitize_channel_text, detect_prompt_injection, validate_auto_post_safety
 from deduplication import TaskDeduplicator
+from user_resolver import default_user_resolver
 
 logging.basicConfig(
     level=logging.INFO,
@@ -273,7 +274,14 @@ class ChannelTriageJob:
             else:  # HUMAN_TODO
                 logger.info("📌 [HUMAN_TODO] Scaffolding action checklist & Todoist sync: '%s'", res.action_summary)
                 exec_result: WorkerExecutionResult = self.worker_agent.execute_task(res, window)
-                assignee = res.assignee_name or requester
+                assignee, assignee_id = default_user_resolver.resolve_assignee(
+                    triage_assignee_name=res.assignee_name,
+                    triage_assignee_id=res.assignee_id,
+                    message_text=window[-1].text if window else "",
+                    sender_id=item.get("requester_id", ""),
+                    sender_name=requester,
+                    participants=self.triage_client.list_participants(self.room_id),
+                )
 
                 todoist_task = None
                 task_url = "https://todoist.com/app"
