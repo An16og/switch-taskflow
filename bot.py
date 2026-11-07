@@ -35,7 +35,8 @@ from models import (
     ExecutionType,
     TaskTriageResult,
     TaskHandoffMessage,
-    WorkerExecutionResult
+    WorkerExecutionResult,
+    format_deadline_with_timezone
 )
 from llm_gateway import LLMGateway
 from agents.triage_agent import TriageAgent
@@ -339,7 +340,7 @@ async def handle_triage_message(client: SwitchAgentClient, payload: Dict[str, An
         f"• **Autonomy Mode:** `{handoff.execution_type.value}`\n"
         f"• **Assignee:** @{handoff.assignee_name}\n"
         f"• **Requested by:** @{handoff.assigner_name}\n"
-        f"• **Deadline:** {handoff.deadline or 'None'}\n"
+        f"• **Deadline:** {format_deadline_with_timezone(handoff.deadline) or 'None'}\n"
         f"• **Category:** {handoff.execution_category}\n\n"
         f"<!-- TASKFLOW_HANDOFF: {handoff.model_dump_json()} -->"
     )
@@ -511,7 +512,7 @@ async def handle_worker_message(client: SwitchAgentClient, payload: Dict[str, An
                 f"• **Task:** {appr_obj.action_summary}\n"
                 f"• **Assignee:** @{appr_obj.assignee_name}\n"
                 f"• **Assigned by:** @{sender_name}\n"
-                f"• **Due Date:** {appr_obj.deadline or 'Not specified'}\n"
+                f"• **Due Date:** {format_deadline_with_timezone(appr_obj.deadline) or 'Not specified'}\n"
                 f"{task_id_line}"
                 f"{sync_line}\n"
                 f"*(Confirmed by @{sender_name}; action checklist forwarded to @{appr_obj.assignee_name})*"
@@ -749,7 +750,7 @@ async def handle_worker_message(client: SwitchAgentClient, payload: Dict[str, An
                 f"• **Task:** {handoff.task_title}\n"
                 f"• **Suggested Assignee:** @{handoff.assignee_name}\n"
                 f"• **Assigned by:** @{handoff.assigner_name}\n"
-                f"• **Due Date:** {handoff.deadline or 'Not specified'}\n"
+                f"• **Due Date:** {format_deadline_with_timezone(handoff.deadline) or 'Not specified'}\n"
                 f"• **Confidence:** `MEDIUM` (Implicit or ambiguous request)\n"
                 f"• **Approval ID:** `{approval.approval_id}`\n\n"
                 f"📋 **Proposed Action Plan Checklist:**\n"
@@ -823,7 +824,7 @@ async def handle_worker_message(client: SwitchAgentClient, payload: Dict[str, An
             f"• **Task:** {handoff.task_title}\n"
             f"• **Assignee:** @{handoff.assignee_name}\n"
             f"• **Assigned by:** @{handoff.assigner_name}\n"
-            f"• **Due Date:** {handoff.deadline or 'Not specified'}\n"
+            f"• **Due Date:** {format_deadline_with_timezone(handoff.deadline) or 'Not specified'}\n"
             f"• **Status:** `{room_task.status.value}` (Native Switch Workroom)\n"
             f"{tracker_line}"
             f"📋 **Action Checklist:**\n{worker_result.artifact_content}\n\n"

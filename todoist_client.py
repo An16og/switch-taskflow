@@ -8,13 +8,14 @@ Todoist acts purely as an optional sync target.
 import hashlib
 import json
 import logging
+import re
 import time
 import uuid
 from dataclasses import dataclass
 from typing import Optional, Dict, Any, Callable
 
 import requests
-from config import TODOIST_API_TOKEN
+from config import TODOIST_API_TOKEN, TIMEZONE
 
 logger = logging.getLogger("TodoistClient")
 
@@ -129,7 +130,14 @@ class TodoistClient:
 
         # Filter out invalid or vague due_strings
         if due_string and str(due_string).strip().lower() not in ("none", "null", "asap", "n/a"):
-            payload["due_string"] = str(due_string).strip()
+            raw_due = str(due_string).strip()
+            # If due_string specifies a time (e.g. "Friday 5 PM") without timezone, attach TIMEZONE
+            tz_pattern = re.compile(r'\b(UTC|GMT|IST|EST|EDT|CST|CDT|MST|MDT|PST|PDT|BST|CET|CEST|JST)\b|[+-]\d{2}:?\d{2}', re.IGNORECASE)
+            time_pattern = re.compile(r'\b\d{1,2}(?::\d{2})?\s*(?:am|pm)\b', re.IGNORECASE)
+            if TIMEZONE and time_pattern.search(raw_due) and not tz_pattern.search(raw_due):
+                payload["due_string"] = f"{raw_due} {TIMEZONE}"
+            else:
+                payload["due_string"] = raw_due
 
         retries_attempted = 0
         response = None

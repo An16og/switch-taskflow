@@ -5,7 +5,7 @@
 [![Switch AI](https://img.shields.io/badge/Native%20Protocol-Switch%20AI%20Core-6366F1)](https://switchagents.ai)
 [![Python 3.12](https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white)](https://python.org)
 [![CI](https://github.com/An16og/switch-taskflow/actions/workflows/ci.yml/badge.svg)](https://github.com/An16og/switch-taskflow/actions/workflows/ci.yml)
-[![Tests](https://img.shields.io/badge/Tests-121%20Passing-brightgreen)](https://github.com/An16og/switch-taskflow/actions/workflows/ci.yml)
+[![Tests](https://img.shields.io/badge/Tests-127%20Passing-brightgreen)](https://github.com/An16og/switch-taskflow/actions/workflows/ci.yml)
 [![WebSocket](https://img.shields.io/badge/Transport-Native%20WebSocket%20%2B%20Ops-00C7B7)](https://switchagents.ai)
 [![Switch Trust](https://img.shields.io/badge/Guardrails-Switch%20Trust%20SDK-10B981)](https://switchagents.ai)
 [![Gemini](https://img.shields.io/badge/LLM-Gemini%203.5%20Flash-4285F4?logo=google&logoColor=white)](https://aistudio.google.com)
@@ -158,11 +158,11 @@ python simulate_switch_interaction.py
 - **Scenario 2 (`HUMAN_TODO`):** Simulates Sarah posting an ambient database todo $\rightarrow$ Triage detects action item $\rightarrow$ Worker scaffolds 3-step action checklist $\rightarrow$ Delivers targeted receipt.
 - **Scenario 3 (Sliding Window Deduplication):** Simulates follow-up banter in the sliding context window $\rightarrow$ Semantic deduplicator screens tokens and suppresses duplicate task firing.
 
-### Run the Complete Test Suite (121/121 Passing):
+### Run the Complete Test Suite (127/127 Passing):
 ```bash
 python -m unittest discover
 ```
-*Executes all 121 unit and integration tests covering process health & heartbeat liveness, graceful WebSocket closure, per-room LLM cost DoS rate limiting, LLM retries/backoff, Claude structured JSON, model-id startup probes, deterministic multi-agent pipeline execution (AUTO_EXECUTE & HUMAN_TODO), SQLite dedup & room buffer persistence across restarts, pending approvals, prompt injection defense, secret leakage DLP gates, channel backlog triage jobs, Todoist idempotency & 429 retry, grounded context resolution, WebSocket heartbeat liveness, and multi-agent coordination in under 4 seconds!*
+*Executes all 127 unit and integration tests covering deadline timezone anchoring ("Friday 5 PM"), process health & heartbeat liveness, graceful WebSocket closure, per-room LLM cost DoS rate limiting, LLM retries/backoff, Claude structured JSON, model-id startup probes, deterministic multi-agent pipeline execution (AUTO_EXECUTE & HUMAN_TODO), SQLite dedup & room buffer persistence across restarts, pending approvals, prompt injection defense, secret leakage DLP gates, channel backlog triage jobs, Todoist idempotency & 429 retry, grounded context resolution, WebSocket heartbeat liveness, and multi-agent coordination in under 4 seconds!*
 
 ---
 
@@ -344,5 +344,5 @@ switch-taskflow/
 * **GitHub Repository:** [https://github.com/An16og/switch-taskflow](https://github.com/An16og/switch-taskflow)
 * **Declarative Template:** [`templates/triage-pair.template.yaml`](file:///C:/Users/anujj/OneDrive/Desktop/switch-taskflow/templates/triage-pair.template.yaml) (Switch Version 2 Room Briefing & Scaffolding)
 * **Continuous Integration:** [GitHub Actions CI](https://github.com/An16og/switch-taskflow/actions/workflows/ci.yml)
-* **Test Suite:** 121 Unit & Integration Tests Passing (100% Green)
+* **Test Suite:** 127 Unit & Integration Tests Passing (100% Green)
 * **License:** MIT

@@ -14,6 +14,8 @@ from pathlib import Path
 from dataclasses import dataclass, field, asdict
 from typing import List, Dict, Any, Optional
 
+from models import format_deadline_with_timezone
+
 logger = logging.getLogger("RoomTaskStore")
 
 
@@ -67,7 +69,7 @@ class RoomTask:
             f"• **Task:** {self.title}",
             f"• **Assignee:** @{self.assignee_name}",
             f"• **Assigned by:** @{self.assigner_name}",
-            f"• **Due Date:** {self.deadline or 'Not specified'}",
+            f"• **Due Date:** {format_deadline_with_timezone(self.deadline) or 'Not specified'}",
             f"• **Status:** `{self.status.value}` (Native Switch Workroom)",
         ]
 

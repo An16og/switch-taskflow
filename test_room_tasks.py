@@ -13,6 +13,7 @@ import unittest
 from unittest.mock import patch, MagicMock
 
 from room_tasks import RoomTask, RoomTaskStore, TaskStatus
+from models import format_deadline_with_timezone
 from todoist_client import TodoistClient, TodoistSyncResult
 from interactions import InteractionDispatcher, handle_confirm_assignment
 from approvals import PendingApprovalStore, ApprovalStatus
@@ -377,6 +378,85 @@ class TestInteractionWithRoomTasks(unittest.TestCase):
         block_text = blocks[0]["text"]["text"]
         self.assertIn("*Sync Notice:* HTTP 401 Unauthorized", block_text)
         self.assertIn(result["task_id"], block_text)
+
+
+class TestDeadlineTimezoneResolution(unittest.TestCase):
+    """Verifies timezone anchoring for ambiguous conversational deadlines like 'Friday 5 PM'."""
+
+    def test_format_deadline_with_timezone_bare_time(self):
+        self.assertEqual(
+            format_deadline_with_timezone("Friday 5 PM", tz="IST"),
+            "Friday 5 PM (IST)"
+        )
+        self.assertEqual(
+            format_deadline_with_timezone("by 3:30 pm", tz="America/New_York"),
+            "by 3:30 pm (America/New_York)"
+        )
+        self.assertEqual(
+            format_deadline_with_timezone("Today 6 PM", tz="UTC"),
+            "Today 6 PM (UTC)"
+        )
+
+    def test_format_deadline_with_timezone_preserves_explicit_tz(self):
+        self.assertEqual(
+            format_deadline_with_timezone("Friday 5 PM UTC"),
+            "Friday 5 PM UTC"
+        )
+        self.assertEqual(
+            format_deadline_with_timezone("Friday 5:00 PM EST"),
+            "Friday 5:00 PM EST"
+        )
+        self.assertEqual(
+            format_deadline_with_timezone("Tomorrow 17:00 +05:30"),
+            "Tomorrow 17:00 +05:30"
+        )
+
+    def test_format_deadline_with_timezone_date_only_and_none(self):
+        self.assertEqual(format_deadline_with_timezone("Tomorrow"), "Tomorrow")
+        self.assertEqual(format_deadline_with_timezone("Next Monday"), "Next Monday")
+        self.assertIsNone(format_deadline_with_timezone(None))
+        self.assertIsNone(format_deadline_with_timezone("None"))
+        self.assertIsNone(format_deadline_with_timezone("n/a"))
+
+    def test_room_task_format_receipt_renders_timezone(self):
+        task = RoomTask(
+            task_id="sw_task_test_tz",
+            room_id="room_alpha",
+            title="Update schema",
+            assignee_name="Anuj",
+            deadline="Friday 5 PM",
+        )
+        receipt = task.format_receipt()
+        # Should include deadline formatted with timezone
+        self.assertIn("Friday 5 PM (", receipt)
+
+    @patch("requests.post")
+    def test_todoist_sync_attaches_timezone_for_bare_time(self, mock_post):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"id": "12345", "url": "https://todoist.com/showTask?id=12345"}
+        mock_post.return_value = mock_resp
+
+        client = TodoistClient(api_token="valid_token")
+        with patch("todoist_client.TIMEZONE", "IST"):
+            res = client.sync_task(content="Ship release", due_string="Friday 5 PM")
+            self.assertTrue(res.success)
+            called_payload = mock_post.call_args[1]["json"]
+            self.assertEqual(called_payload["due_string"], "Friday 5 PM IST")
+
+    @patch("requests.post")
+    def test_todoist_sync_preserves_explicit_timezone(self, mock_post):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"id": "12345", "url": "https://todoist.com/showTask?id=12345"}
+        mock_post.return_value = mock_resp
+
+        client = TodoistClient(api_token="valid_token")
+        with patch("todoist_client.TIMEZONE", "IST"):
+            res = client.sync_task(content="Ship release", due_string="Friday 5 PM UTC")
+            self.assertTrue(res.success)
+            called_payload = mock_post.call_args[1]["json"]
+            self.assertEqual(called_payload["due_string"], "Friday 5 PM UTC")
 
 
 if __name__ == "__main__":

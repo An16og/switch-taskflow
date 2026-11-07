@@ -1,5 +1,6 @@
 import os
 import sys
+from datetime import datetime
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -77,6 +78,10 @@ ROOM_RATE_LIMIT_WINDOW_SECONDS = float(os.getenv("ROOM_RATE_LIMIT_WINDOW_SECONDS
 
 # TaskFlow Persistent State Storage (SQLite)
 TASKFLOW_STATE_DB = os.getenv("TASKFLOW_STATE_DB", "taskflow_state.db").strip()
+
+# Timezone Configuration (for deadlines like 'Friday 5 PM' and Todoist sync)
+SYSTEM_TIMEZONE = datetime.now().astimezone().tzname() or "UTC"
+TIMEZONE = os.getenv("TIMEZONE", SYSTEM_TIMEZONE).strip()
 
 # Task Tracker (Optional - Switch room tasks & documents are primary)
 TODOIST_API_TOKEN = os.getenv("TODOIST_API_TOKEN", "").strip()

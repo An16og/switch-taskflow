@@ -1,6 +1,34 @@
+import os
+import re
+from datetime import datetime
 from enum import Enum
 from typing import Optional, List, Dict, Any
 from pydantic import BaseModel, Field
+
+def format_deadline_with_timezone(deadline: Optional[str], tz: Optional[str] = None) -> Optional[str]:
+    """Formats natural language deadline with explicit timezone indicator if missing.
+    
+    Examples:
+        'Friday 5 PM' -> 'Friday 5 PM (IST)'
+        'Friday 5 PM UTC' -> 'Friday 5 PM UTC'
+        'Tomorrow' -> 'Tomorrow' (dates without specific times stay untouched)
+    """
+    if not deadline:
+        return None
+    cleaned = str(deadline).strip()
+    if not cleaned or cleaned.lower() in ("none", "null", "n/a"):
+        return None
+    tz_val = tz or os.getenv("TIMEZONE") or datetime.now().astimezone().tzname() or "UTC"
+    tz_pattern = re.compile(
+        r'\b(UTC|GMT|IST|EST|EDT|CST|CDT|MST|MDT|PST|PDT|BST|CET|CEST|JST|AEST|AEDT)\b|[+-]\d{2}:?\d{2}',
+        re.IGNORECASE
+    )
+    if tz_pattern.search(cleaned):
+        return cleaned
+    time_pattern = re.compile(r'\b(\d{1,2}(?::\d{2})?\s*(?:am|pm)?|\d{1,2}:\d{2})\b', re.IGNORECASE)
+    if time_pattern.search(cleaned) and tz_val:
+        return f"{cleaned} ({tz_val})"
+    return cleaned
 
 class ConfidenceLevel(str, Enum):
     HIGH = "HIGH"       # Direct, clear task assignment to a specific person
