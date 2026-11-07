@@ -114,9 +114,10 @@ Return the structured TaskTriageResult."""
                 response_schema=TaskTriageResult
             )
         except Exception as e:
-            logger.error(f"TriageAgent failed: {e}", exc_info=True)
+            logger.error("🚨 [TriageAgent] LLM triage execution failed: %s", e, exc_info=True)
             return TaskTriageResult(
                 is_task=False,
                 confidence=ConfidenceLevel.LOW,
-                confidence_reason=f"Error in triage processing: {e}"
+                confidence_reason=f"LLM triage execution failed: {type(e).__name__} - {e}",
+                error=f"LLM triage execution failed: {type(e).__name__} - {e}"
             )

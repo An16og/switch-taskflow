@@ -196,6 +196,29 @@ async def handle_triage_message(client: SwitchAgentClient, payload: Dict[str, An
         triage_result.confidence_reason
     )
 
+    # Check if triage encountered an LLM provider or model error (DO NOT silently classify as 'not a task')
+    if triage_result.error:
+        logger.error(
+            "❌ [Triage] LLM classification failure on message from @%s: %s",
+            sender_name,
+            triage_result.error
+        )
+        if is_addressed_to_us:
+            err_notice = (
+                f"⚠️ @{sender_name} **[Triage Agent Error]**\n"
+                f"Could not classify your request due to an LLM provider error:\n"
+                f"```\n{triage_result.error}\n```\n"
+                f"*(Please check model ID and API key configuration in `.env`)*"
+            )
+            await asyncio.to_thread(
+                client.send_targeted_message,
+                body=err_notice,
+                target_names=[sender_name],
+                thread_id=thread_id,
+                room_id=room_id
+            )
+        return
+
     # If addressed directly but no actionable task was detected
     if not triage_result.is_task:
         if is_addressed_to_us:
@@ -815,6 +838,14 @@ async def main():
     print(f"Switch Server: {SWITCH_SERVER_URL}")
     print(f"Ambient Triage Policy: {AMBIENT_TRIAGE_POLICY}")
     print("=" * 65)
+
+    # Startup probe of LLM providers & models (verifies model IDs & credentials)
+    logger.info("🔍 Probing configured LLM model IDs at startup...")
+    healthy, probe_msg = gateway.probe_active_provider()
+    if healthy:
+        logger.info("🤖 [Startup Probe] Active LLM: %s", probe_msg)
+    else:
+        logger.warning("⚠️ [Startup Probe] LLM Probe Warning: %s", probe_msg)
 
     if args.agent == "triage":
         logger.info("Starting TaskFlow Triage Agent...")

@@ -56,10 +56,19 @@ SWITCH_TRUST_ALLOW_INSECURE_GATEWAY = os.getenv("SWITCH_TRUST_ALLOW_INSECURE_GAT
 # Ambient Triage Policy ("addressed_only", "action_keywords", "all")
 AMBIENT_TRIAGE_POLICY = os.getenv("AMBIENT_TRIAGE_POLICY", "action_keywords").strip().lower()
 
-# LLM Providers
+# LLM Providers & Configured Models
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite").strip()
+
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini").strip()
+
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "").strip()
+ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-3-5-sonnet-20241022").strip()
+
+# LLM Retry & Backoff Configuration
+LLM_MAX_RETRIES = int(os.getenv("LLM_MAX_RETRIES", "3").strip() or 3)
+LLM_INITIAL_BACKOFF = float(os.getenv("LLM_INITIAL_BACKOFF", "0.5").strip() or 0.5)
 
 # TaskFlow Persistent State Storage (SQLite)
 TASKFLOW_STATE_DB = os.getenv("TASKFLOW_STATE_DB", "taskflow_state.db").strip()

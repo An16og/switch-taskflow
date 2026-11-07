@@ -196,6 +196,9 @@ class ChannelTriageJob:
             # Run through triage agent with active tasks context
             active_tasks = deduplicator.get_active_task_summaries(self.room_id)
             result: TaskTriageResult = self.triage_agent.triage_conversation(window, active_tasks=active_tasks)
+            if result.error:
+                logger.error("❌ [ChannelTriageJob] LLM triage failure on window: %s", result.error)
+                continue
             if not result.is_task:
                 continue
 

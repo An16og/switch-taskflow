@@ -53,6 +53,10 @@ class TaskTriageResult(BaseModel):
         default=False,
         description="True if critical context is missing and the sliding window should expand."
     )
+    error: Optional[str] = Field(
+        default=None,
+        description="Captures runtime LLM or provider errors so they are never silently classified as 'not a task'."
+    )
 
 class TaskHandoffMessage(BaseModel):
     """Structured handoff payload sent from TaskFlow Triage to TaskFlow Worker via Switch targeted room message."""
