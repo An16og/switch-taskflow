@@ -64,6 +64,9 @@ ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "").strip()
 # Task Tracker (Optional - Switch room tasks & documents are primary)
 TODOIST_API_TOKEN = os.getenv("TODOIST_API_TOKEN", "").strip()
 
+# Optional External Chat Token (for simulate_team.py or external bridges)
+SLACK_BOT_TOKEN = os.getenv("SLACK_BOT_TOKEN", "").strip()
+
 def check_env():
     """Validates essential environment keys required for TaskFlow to operate."""
     missing = []
