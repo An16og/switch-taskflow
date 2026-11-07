@@ -18,6 +18,7 @@ import time
 import asyncio
 import unittest
 from unittest.mock import MagicMock, patch
+import websockets
 
 from room_documents import (
     RoomDocument,
@@ -501,6 +502,144 @@ class TestRoomDocuments(unittest.TestCase):
                 client.register_or_validate(overwrite=False)
             self.assertIn("overwrite=False", str(ctx.exception))
             self.assertIn("protect active credentials", str(ctx.exception))
+
+    def test_pong_includes_cursor_and_generation(self):
+        """Verifies that WebSocket ping response returns pong containing cursor and generation."""
+        stable_id = str(uuid.uuid4())
+        client = SwitchAgentClient(
+            server_url="http://127.0.0.1:52422",
+            agent_id="test_worker_pong",
+            api_key="test_key",
+            room_id="room_pong_test",
+            connection_id=stable_id,
+        )
+        client.register_or_validate = MagicMock(return_value=True)
+        client.ensure_room = MagicMock(return_value="room_pong_test")
+        client.apply_room_briefing = MagicMock(return_value=True)
+
+        sent_messages = []
+
+        class MockWs:
+            def __init__(self):
+                self.messages = [
+                    json.dumps({
+                        "event": "connection_state",
+                        "data": {
+                            "connection_id": stable_id,
+                            "generation": 1024,
+                            "cursor": 15,
+                            "rooms": ["room_pong_test"]
+                        }
+                    }),
+                    json.dumps({"event": "ping", "data": {}}),
+                ]
+                self.idx = 0
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc_val, exc_tb):
+                pass
+
+            async def recv(self):
+                if self.idx < len(self.messages):
+                    msg = self.messages[self.idx]
+                    self.idx += 1
+                    return msg
+                client.stop()
+                raise websockets.exceptions.ConnectionClosed(None, None)
+
+            async def send(self, data):
+                sent_messages.append(json.loads(data))
+
+            async def close(self):
+                pass
+
+        with patch("websockets.connect", return_value=MockWs()):
+            asyncio.run(client.connect_and_listen(apply_briefing=False, auto_reconnect=False))
+
+        # Verify state
+        self.assertEqual(client.connection_id, stable_id)
+        self.assertEqual(client.generation, 1024)
+        self.assertEqual(client.cursor, 15)
+
+        # Verify pong frame
+        pongs = [m for m in sent_messages if m.get("type") == "pong"]
+        self.assertEqual(len(pongs), 1)
+        pong = pongs[0]
+        self.assertEqual(pong["cursor"], 15)
+        self.assertEqual(pong["generation"], 1024)
+
+    def test_reconnect_preserves_stable_connection_id_and_expected_generation(self):
+        """Verifies reconnect preserves connection_id and passes expected_generation and start_at."""
+        stable_id = "stable-conn-id-999"
+        client = SwitchAgentClient(
+            server_url="http://127.0.0.1:52422",
+            agent_id="test_worker_reconnect",
+            api_key="test_key",
+            room_id="room_recon_test",
+            connection_id=stable_id,
+        )
+        client.register_or_validate = MagicMock(return_value=True)
+        client.ensure_room = MagicMock(return_value="room_recon_test")
+        client.apply_room_briefing = MagicMock(return_value=True)
+
+        connected_urls = []
+
+        class MockWsSession:
+            def __init__(self, session_num):
+                self.session_num = session_num
+                self.sent_state = False
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc_val, exc_tb):
+                pass
+
+            async def recv(self):
+                if not self.sent_state:
+                    self.sent_state = True
+                    return json.dumps({
+                        "event": "connection_state",
+                        "data": {
+                            "connection_id": stable_id,
+                            "generation": 5000 + self.session_num,
+                            "cursor": 20 * self.session_num,
+                            "rooms": ["room_recon_test"]
+                        }
+                    })
+                # After sending connection_state, close first socket to force reconnect; stop on second
+                if self.session_num == 1:
+                    raise websockets.exceptions.ConnectionClosed(None, None)
+                else:
+                    client.stop()
+                    raise websockets.exceptions.ConnectionClosed(None, None)
+
+            async def send(self, data):
+                pass
+
+            async def close(self):
+                pass
+
+        session_counter = [0]
+        def mock_ws_connect(url, *args, **kwargs):
+            connected_urls.append(url)
+            session_counter[0] += 1
+            return MockWsSession(session_counter[0])
+
+        with patch("websockets.connect", side_effect=mock_ws_connect):
+            asyncio.run(client.connect_and_listen(apply_briefing=False, auto_reconnect=True, reconnect_delay=0.01))
+
+        self.assertEqual(len(connected_urls), 2)
+        # First connect: initial connection_id
+        self.assertIn(f"connection_id={stable_id}", connected_urls[0])
+        self.assertNotIn("expected_generation=", connected_urls[0])
+
+        # Second connect (reconnect): stable connection_id preserved + expected_generation + start_at
+        self.assertIn(f"connection_id={stable_id}", connected_urls[1])
+        self.assertIn("expected_generation=5001", connected_urls[1])
+        self.assertIn("start_at=20", connected_urls[1])
 
 
 if __name__ == "__main__":

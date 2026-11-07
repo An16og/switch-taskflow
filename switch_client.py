@@ -34,6 +34,7 @@ class SwitchAgentClient:
         display_name: str = "TaskFlow",
         description: str = "Autonomous Task Triage & Workroom Worker",
         overwrite: bool = False,
+        connection_id: Optional[str] = None,
     ):
         self.server_url = server_url.rstrip("/")
         self.ws_base_url = self.server_url.replace("http://", "ws://").replace("https://", "wss://")
@@ -46,7 +47,10 @@ class SwitchAgentClient:
         self.description = description
         self.overwrite = overwrite
 
-        self.connection_id = str(uuid.uuid4())
+        # Stable connection_id, generation, and cursor for Switch WebSocket liveness & reconnection
+        self.connection_id = connection_id or str(uuid.uuid4())
+        self.generation: Optional[int] = None
+        self.cursor: int = 0
         self._ws = None
         self._running = False
         self._message_handlers: List[Callable[[Dict[str, Any]], Awaitable[None]]] = []
@@ -190,8 +194,18 @@ class SwitchAgentClient:
         """Registers an asynchronous callback for incoming room messages."""
         self._message_handlers.append(handler)
 
-    async def connect_and_listen(self, apply_briefing: bool = True):
-        """Connects over WebSocket with a dedicated heartbeat pump."""
+    async def connect_and_listen(
+        self,
+        apply_briefing: bool = True,
+        auto_reconnect: bool = True,
+        reconnect_delay: float = 1.0,
+        max_reconnect_delay: float = 30.0,
+    ):
+        """Connects over WebSocket with a dedicated heartbeat pump and resilient reconnection.
+        
+        Maintains stable connection_id, tracks stream generation, advances cursor,
+        and returns pong frames containing cursor required by Switch liveness protocol.
+        """
         self.register_or_validate()
         self.ensure_room()
 
@@ -202,78 +216,139 @@ class SwitchAgentClient:
             except Exception as e:
                 logger.warning("Could not apply ROOM_BRIEFING.md on connect: %s", e)
 
-        ws_url = (
-            f"{self.ws_base_url}/agents/{self.agent_id}/connection/ws"
-            f"?connection_id={self.connection_id}&rooms={self.room_id}"
-        )
-        logger.info("Opening Switch WebSocket connection: %s", ws_url)
-        headers = {"Authorization": f"Bearer {self.api_key}"}
-
         self._running = True
-        try:
+        current_delay = reconnect_delay
+
+        while self._running:
+            # Reconnect with stable connection_id, generation, and cursor
+            query_params = [
+                f"connection_id={self.connection_id}",
+                f"rooms={self.room_id}",
+            ]
+            if self.generation is not None:
+                query_params.append(f"expected_generation={self.generation}")
+            if self.cursor > 0:
+                query_params.append(f"start_at={self.cursor}")
+
+            ws_url = f"{self.ws_base_url}/agents/{self.agent_id}/connection/ws?{'&'.join(query_params)}"
+            logger.info("Opening Switch WebSocket connection: %s", ws_url)
+            headers = {"Authorization": f"Bearer {self.api_key}"}
+
             try:
-                ws_ctx = websockets.connect(ws_url, additional_headers=headers)
-            except TypeError:
-                ws_ctx = websockets.connect(ws_url, extra_headers=headers)
+                try:
+                    ws_ctx = websockets.connect(ws_url, additional_headers=headers)
+                except TypeError:
+                    ws_ctx = websockets.connect(ws_url, extra_headers=headers)
 
-            async with ws_ctx as ws:
-                self._ws = ws
-                logger.info("Connected to Switch Server WebSocket! Connection ID: %s", self.connection_id)
+                async with ws_ctx as ws:
+                    self._ws = ws
+                    current_delay = reconnect_delay
+                    logger.info("Connected to Switch Server WebSocket! Connection ID: %s", self.connection_id)
 
-                while self._running:
-                    try:
-                        raw_msg = await ws.recv()
-                    except websockets.exceptions.ConnectionClosed as e:
-                        logger.warning("Switch WebSocket closed: %s", e)
-                        break
+                    while self._running:
+                        try:
+                            raw_msg = await ws.recv()
+                        except websockets.exceptions.ConnectionClosed as e:
+                            logger.warning("Switch WebSocket closed: %s", e)
+                            break
 
-                    try:
-                        frame = json.loads(raw_msg)
-                    except Exception:
-                        continue
+                        try:
+                            frame = json.loads(raw_msg)
+                        except Exception:
+                            continue
 
-                    event = frame.get("event") or frame.get("type")
-                    data = frame.get("data") or frame.get("payload") or {}
+                        event = frame.get("event") or frame.get("type")
+                        data = frame.get("data") or frame.get("payload") or {}
 
-                    # Real-time Heartbeat ping -> pong (must never stall)
-                    if event == "ping":
-                        pong_frame = {"type": "pong"}
-                        await ws.send(json.dumps(pong_frame))
-                        logger.debug("Received ping, sent pong.")
-                        continue
+                        # Advance and track cursor from frame or data
+                        frame_cursor = frame.get("cursor") or frame.get("id")
+                        if not isinstance(frame_cursor, int) and isinstance(data, dict):
+                            frame_cursor = data.get("cursor")
+                        if isinstance(frame_cursor, int) and frame_cursor > self.cursor:
+                            self.cursor = frame_cursor
 
-                    if event == "connection_state":
-                        logger.info("Connection confirmed by Switch Server: rooms=%s", frame.get("rooms") or data.get("rooms"))
-                        if apply_briefing:
-                            try:
-                                self.apply_room_briefing(room_id=self.room_id)
-                            except Exception as e:
-                                logger.debug("Could not re-apply room briefing on connection_state: %s", e)
-                        continue
+                        # Switch liveness protocol: server sends ping, client MUST answer pong with cursor
+                        if event == "ping":
+                            pong_frame = {
+                                "type": "pong",
+                                "cursor": self.cursor,
+                            }
+                            if self.generation is not None:
+                                pong_frame["generation"] = self.generation
+                            await ws.send(json.dumps(pong_frame))
+                            logger.debug("Received ping, sent pong with cursor=%s (generation=%s).", self.cursor, self.generation)
+                            continue
 
-                    if event == "message":
-                        # Switch message frames may nest payload under frame['data']['payload'] or frame['payload']
-                        raw_data = frame.get("data") if isinstance(frame.get("data"), dict) else frame
-                        if isinstance(raw_data.get("payload"), dict):
-                            inner_payload = raw_data["payload"]
-                        elif isinstance(frame.get("payload"), dict):
-                            inner_payload = frame["payload"]
-                        else:
-                            inner_payload = raw_data
+                        if event == "connection_state":
+                            # Server informs client of confirmed generation, cursor, and connection_id
+                            server_conn_id = data.get("connection_id") if isinstance(data, dict) else None
+                            if server_conn_id:
+                                self.connection_id = server_conn_id
+                            if isinstance(data, dict):
+                                if "generation" in data:
+                                    self.generation = data["generation"]
+                                if "cursor" in data and isinstance(data["cursor"], int):
+                                    self.cursor = max(self.cursor, data["cursor"])
 
-                        event_data = {
-                            "room_id": frame.get("room_id") or raw_data.get("room_id") or self.room_id,
-                            "channel_type": frame.get("channel_type") or raw_data.get("channel_type"),
-                            **inner_payload,
-                        }
-                        sender = event_data.get("sender_name") or event_data.get("sender")
-                        logger.info("Received room message: sender=%s, addressed=%s, body=%s", sender, event_data.get("addressed"), str(event_data.get("body", ""))[:40])
-                        for handler in self._message_handlers:
-                            asyncio.create_task(self._safe_invoke_handler(handler, event_data))
+                            logger.info(
+                                "Connection confirmed by Switch Server: rooms=%s, generation=%s, cursor=%s",
+                                frame.get("rooms") or (data.get("rooms") if isinstance(data, dict) else None),
+                                self.generation,
+                                self.cursor,
+                            )
+                            if apply_briefing:
+                                try:
+                                    self.apply_room_briefing(room_id=self.room_id)
+                                except Exception as e:
+                                    logger.debug("Could not re-apply room briefing on connection_state: %s", e)
+                            continue
 
-        except Exception as e:
-            logger.error("WebSocket connection error: %s", e)
-            raise
+                        if event == "refused":
+                            logger.warning("Connection refused by Switch Server: %s", data)
+                            # Reset generation if stale incarnation was rejected
+                            self.generation = None
+                            break
+
+                        if event == "message":
+                            # Switch message frames may nest payload under frame['data']['payload'] or frame['payload']
+                            raw_data = frame.get("data") if isinstance(frame.get("data"), dict) else frame
+                            if isinstance(raw_data.get("payload"), dict):
+                                inner_payload = raw_data["payload"]
+                            elif isinstance(frame.get("payload"), dict):
+                                inner_payload = frame["payload"]
+                            else:
+                                inner_payload = raw_data
+
+                            event_data = {
+                                "room_id": frame.get("room_id") or raw_data.get("room_id") or self.room_id,
+                                "channel_type": frame.get("channel_type") or raw_data.get("channel_type"),
+                                **inner_payload,
+                            }
+                            sender = event_data.get("sender_name") or event_data.get("sender")
+                            logger.info("Received room message: sender=%s, addressed=%s, body=%s", sender, event_data.get("addressed"), str(event_data.get("body", ""))[:40])
+                            for handler in self._message_handlers:
+                                asyncio.create_task(self._safe_invoke_handler(handler, event_data))
+
+            except asyncio.CancelledError:
+                logger.info("Switch connection cancelled; stopping listener.")
+                break
+            except Exception as e:
+                if not self._running or not auto_reconnect:
+                    logger.warning("Switch WebSocket error (no reconnect): %s", e)
+                    break
+                logger.warning(
+                    "Switch WebSocket disconnected (%s). Reconnecting with stable connection_id=%s, generation=%s, cursor=%s in %.1fs...",
+                    e,
+                    self.connection_id,
+                    self.generation,
+                    self.cursor,
+                    current_delay,
+                )
+                await asyncio.sleep(current_delay)
+                current_delay = min(current_delay * 1.5, max_reconnect_delay)
+
+            if not auto_reconnect or not self._running:
+                break
 
     async def _safe_invoke_handler(self, handler: Callable[[Dict[str, Any]], Any], data: Dict[str, Any]):
         try:
@@ -286,7 +361,12 @@ class SwitchAgentClient:
     def stop(self):
         self._running = False
         if self._ws:
-            asyncio.create_task(self._ws.close())
+            try:
+                close_coro = self._ws.close()
+                if asyncio.iscoroutine(close_coro):
+                    asyncio.create_task(close_coro)
+            except Exception as e:
+                logger.debug("Error closing websocket during stop: %s", e)
 
     def invite_agent_to_room(self, agent_name: str, room_id: Optional[str] = None) -> bool:
         """Invites another Switch agent into the room by name."""

@@ -81,7 +81,15 @@ class ContextResolver:
     """Resolves ground-truth context from git, repository files, and Switch room ops."""
 
     def __init__(self, repo_dir: Optional[str] = None):
-        self.repo_dir = repo_dir or os.getcwd()
+        if repo_dir:
+            self.repo_dir = repo_dir
+        else:
+            cwd = os.getcwd()
+            file_dir = str(Path(__file__).resolve().parent)
+            if (Path(cwd) / ".git").exists() or (Path(cwd) / "CHANGELOG.md").exists():
+                self.repo_dir = cwd
+            else:
+                self.repo_dir = file_dir
 
     def get_git_commit_log(self, limit: int = 15) -> str:
         """Fetches the latest real git commit messages and hashes."""
