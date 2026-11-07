@@ -10,6 +10,7 @@ import logging
 from typing import Dict, Any, Optional, List, Tuple
 from approvals import PendingApprovalStore, default_approval_store, ApprovalStatus, PendingApproval
 from room_tasks import default_room_task_store, RoomTask
+from models import format_deadline_with_timezone
 from slack_cards import (
     parse_button_payload,
     build_unauthorized_action_card,
@@ -249,6 +250,7 @@ class InteractionDispatcher:
                         execution_type="HUMAN_TODO",
                         action_plan=appr.artifact_content,
                         context_notes=appr.context_notes,
+                        thread_id=appr.message_ts,
                     )
                 except Exception as e:
                     logger.warning("Failed recording native room task on approval: %s", e)
@@ -322,13 +324,14 @@ class InteractionDispatcher:
                         assignee_notice = (
                             f"@{appr.assignee_name} 🎯 **Task Assigned by @{user_name or appr.assigner_name}**\n\n"
                             f"**Task:** {appr.action_summary}\n"
-                            f"**Due Date:** {appr.deadline or 'Not specified'}\n\n"
+                            f"**Due Date:** {format_deadline_with_timezone(appr.deadline) or 'Not specified'}\n\n"
                             f"📋 **Action Checklist:**\n{appr.artifact_content}\n\n"
                             f"*(Confirmed from TaskFlow medium-confidence proposal)*"
                         )
                         self.switch_client.send_targeted_message(
                             body=assignee_notice,
                             target_names=[appr.assignee_name],
+                            thread_id=appr.message_ts,
                             room_id=appr.room_id
                         )
                         logger.info("🎯 Forwarded confirmed worker checklist to @%s via Switch", appr.assignee_name)
@@ -528,6 +531,7 @@ def handle_confirm_assignment(
             execution_type="HUMAN_TODO",
             action_plan=action_plan,
             context_notes=appr.context_notes if appr else None,
+            thread_id=appr.message_ts if appr else message_ts,
         )
     except Exception as e:
         log.warning("Failed recording native room task on confirm: %s", e)

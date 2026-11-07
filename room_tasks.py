@@ -41,6 +41,7 @@ class RoomTask:
     execution_type: str = "HUMAN_TODO"
     action_plan: str = ""
     context_notes: Optional[str] = None
+    thread_id: Optional[str] = None
     todoist_url: Optional[str] = None
     todoist_error: Optional[str] = None
     created_at: float = field(default_factory=time.time)
@@ -127,6 +128,7 @@ class RoomTaskStore:
         execution_type: str = "HUMAN_TODO",
         action_plan: str = "",
         context_notes: Optional[str] = None,
+        thread_id: Optional[str] = None,
         todoist_url: Optional[str] = None,
         todoist_error: Optional[str] = None,
     ) -> RoomTask:
@@ -145,6 +147,7 @@ class RoomTaskStore:
             execution_type=str(execution_type) if execution_type is not None else "HUMAN_TODO",
             action_plan=str(action_plan) if action_plan is not None else "",
             context_notes=str(context_notes) if context_notes is not None else None,
+            thread_id=str(thread_id) if thread_id is not None else None,
             todoist_url=str(todoist_url) if todoist_url is not None else None,
             todoist_error=str(todoist_error) if todoist_error is not None else None,
         )

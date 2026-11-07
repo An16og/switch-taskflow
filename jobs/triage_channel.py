@@ -28,7 +28,7 @@ from config import (
     SWITCH_WORKER_AGENT_API_KEY,
     TODOIST_API_TOKEN,
 )
-from models import SlackMessage, TaskTriageResult, ExecutionType, WorkerExecutionResult
+from models import SlackMessage, TaskTriageResult, ExecutionType, WorkerExecutionResult, should_skip_agent_message
 from switch_client import SwitchAgentClient
 from agents.triage_agent import TriageAgent
 from agents.worker_agent import WorkerAgent
@@ -79,6 +79,7 @@ class ChannelTriageJob:
         limit: int = 50,
         dry_run: bool = False,
         post_digest: bool = True,
+        thread_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Runs the channel triage job.
         
@@ -86,6 +87,7 @@ class ChannelTriageJob:
             limit: Number of recent messages to inspect.
             dry_run: If True, triages and logs without posting to Switch or creating Todoist tasks.
             post_digest: If True, broadcasts the final summary card to the room.
+            thread_id: Optional source thread ID to keep digest and scan reports in-thread.
             
         Returns:
             Dictionary containing scan statistics, auto-executed deliverables, and human to-dos.
@@ -124,10 +126,8 @@ class ChannelTriageJob:
             body = raw.get("body") or ""
             ts = str(raw.get("timestamp") or time.time())
 
-            # Skip TaskFlow agents or Switch server notices
-            if sender_name.lower() in ("taskflow-triage", "taskflow-worker", "taskflow", "switch-server"):
-                continue
-            if "@switch-agent-" in sender.lower():
+            # Skip TaskFlow agents, bot messages, or internal channel types
+            if should_skip_agent_message(raw, client=self.triage_client, role="triage"):
                 continue
             if "<!-- TASKFLOW_HANDOFF:" in body or "[TASK_HANDOFF]" in body or "[TEST_HANDOFF]" in body:
                 continue
@@ -158,7 +158,10 @@ class ChannelTriageJob:
                 "*(Automated triage job executed on Switch Core)*"
             )
             if post_digest and not dry_run:
-                self.triage_client.post_message(body=clean_digest, room_id=self.room_id)
+                if thread_id:
+                    self.triage_client.post_message(body=clean_digest, thread_id=thread_id, room_id=self.room_id)
+                else:
+                    self.triage_client.post_message(body=clean_digest, room_id=self.room_id)
             return {
                 "status": "up_to_date",
                 "total_raw_scanned": len(raw_messages),
@@ -409,7 +412,10 @@ class ChannelTriageJob:
 
         # 6. Post Digest Card to Room
         if post_digest and not dry_run:
-            self.triage_client.post_message(body=digest_markdown, room_id=self.room_id)
+            if thread_id:
+                self.triage_client.post_message(body=digest_markdown, thread_id=thread_id, room_id=self.room_id)
+            else:
+                self.triage_client.post_message(body=digest_markdown, room_id=self.room_id)
             logger.info("Published Channel Triage Digest to room.")
 
         report = {

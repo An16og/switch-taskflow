@@ -36,7 +36,9 @@ from models import (
     TaskTriageResult,
     TaskHandoffMessage,
     WorkerExecutionResult,
-    format_deadline_with_timezone
+    format_deadline_with_timezone,
+    extract_thread_id,
+    should_skip_agent_message,
 )
 from llm_gateway import LLMGateway
 from agents.triage_agent import TriageAgent
@@ -125,10 +127,10 @@ async def handle_triage_message(client: SwitchAgentClient, payload: Dict[str, An
     addressed = payload.get("addressed", False)
     room_id = payload.get("room_id", client.room_id)
     message_id = payload.get("id") or payload.get("message_id")
-    thread_id = payload.get("thread_id") or message_id
+    thread_id = extract_thread_id(payload)
 
-    # Never process messages originating from TaskFlow agents themselves
-    if sender_name.lower() in ("taskflow-triage", "taskflow-worker", "taskflow") or sender in (client.agent_id, SWITCH_WORKER_AGENT_ID):
+    # Never process messages originating from TaskFlow agents themselves, bots, or internal channel types
+    if should_skip_agent_message(payload, client=client, role="triage"):
         return
 
     logger.info("👂 [Triage] Room message from %s (addressed=%s): %s", sender_name, addressed, body[:60])
@@ -178,11 +180,12 @@ async def handle_triage_message(client: SwitchAgentClient, payload: Dict[str, An
         await asyncio.to_thread(
             client.post_message,
             body=f"🔍 @{sender_name} Starting full channel backlog triage scan (analyzing recent conversation history)...",
+            thread_id=thread_id,
             room_id=room_id
         )
         from jobs.triage_channel import ChannelTriageJob
         job = ChannelTriageJob(triage_client=client, room_id=room_id)
-        await asyncio.to_thread(job.run, limit=50, post_digest=True)
+        await asyncio.to_thread(job.run, limit=50, post_digest=True, thread_id=thread_id)
         return
 
     # Guardrail: Per-Room Rate Limit check (LLM Cost DoS Prevention)
@@ -415,10 +418,10 @@ async def handle_worker_message(client: SwitchAgentClient, payload: Dict[str, An
     addressed = payload.get("addressed", False)
     room_id = payload.get("room_id", client.room_id)
     message_id = payload.get("id") or payload.get("message_id")
-    thread_id = payload.get("thread_id") or message_id
+    thread_id = extract_thread_id(payload)
 
-    # Filter out worker's own messages
-    if sender_name.lower() in ("taskflow-worker",) or sender == client.agent_id:
+    # Filter out worker's own messages and non-handoff agent chatter
+    if should_skip_agent_message(payload, client=client, role="worker"):
         return
 
     # 1. Check for interactive approval commands in the room (@taskflow-worker approve/dismiss appr_...)
@@ -483,10 +486,11 @@ async def handle_worker_message(client: SwitchAgentClient, payload: Dict[str, An
                 f"{doc_line}"
                 f"*(Dismissed by @{sender_name})*"
             )
+            dismiss_target_thread = (res["approval"].message_ts if res.get("approval") else None) or thread_id
             await asyncio.to_thread(
                 client.post_message,
                 body=dismiss_msg,
-                thread_id=thread_id,
+                thread_id=dismiss_target_thread,
                 room_id=room_id
             )
             logger.info("❌ [Worker] Dismissed approval %s by @%s", approval_id, sender_name)
@@ -517,10 +521,11 @@ async def handle_worker_message(client: SwitchAgentClient, payload: Dict[str, An
                 f"{sync_line}\n"
                 f"*(Confirmed by @{sender_name}; action checklist forwarded to @{appr_obj.assignee_name})*"
             )
+            confirm_target_thread = appr_obj.message_ts or thread_id
             await asyncio.to_thread(
                 client.post_message,
                 body=confirm_receipt,
-                thread_id=thread_id,
+                thread_id=confirm_target_thread,
                 room_id=room_id
             )
 
@@ -786,6 +791,7 @@ async def handle_worker_message(client: SwitchAgentClient, payload: Dict[str, An
             execution_type=handoff.execution_type.value if hasattr(handoff.execution_type, "value") else str(handoff.execution_type),
             action_plan=worker_result.artifact_content,
             context_notes=handoff.context_notes,
+            thread_id=handoff.thread_id,
         )
 
         task_description = (
