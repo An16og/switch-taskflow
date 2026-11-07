@@ -389,7 +389,7 @@ switch-taskflow/
 ---
 
 ## 🏆 Hackathon Submission Details
-
+* **Wispr flow usage card:** <img width="1362" height="842" alt="Screenshot 2026-11-07 224621" src="https://github.com/user-attachments/assets/cc09e4a2-3ad5-41ea-9cb1-fc6d7fc72f25" />
 * **Hackathon:** Flip the Switch Hackathon (Nov 2026)
 * **Hosts:** WeMakeDevs & DevTools Academy
 * **Powered by:** Switch AI Core (`switchagents.ai` / SandboxAQ)
