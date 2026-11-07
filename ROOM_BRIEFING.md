@@ -1,8 +1,9 @@
 # 📋 TaskFlow Room Briefing & Operational Guide
 
 > **Workroom:** TaskFlow Operations  
-> **Architecture:** Native Switch Dual-Agent Workroom (`taskflow-triage` + `taskflow-worker`)  
-> **Template:** [`triage-pair.template.yaml`](file:///C:/Users/anujj/OneDrive/Desktop/switch-taskflow/templates/triage-pair.template.yaml) (Switch V2)  
+> **Architecture:** Native Switch Dual-Agent Protocol Workroom (`taskflow-triage` + `taskflow-worker` in `bot.py`)  
+> **Template:** [`triage-pair.template.yaml`](file:///C:/Users/anujj/OneDrive/Desktop/switch-taskflow/templates/triage-pair.template.yaml) (Switch V2 Room Briefing & Scaffolding)  
+> **Runtime Note for Evaluators:** Run `python bot.py` to start the agents; the YAML template provisions the workroom briefing and binds the protocol agents.  
 
 ---
 

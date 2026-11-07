@@ -641,6 +641,36 @@ class TestRoomDocuments(unittest.TestCase):
         self.assertIn("expected_generation=5001", connected_urls[1])
         self.assertIn("start_at=20", connected_urls[1])
 
+    def test_template_yaml_validity_and_custom_protocol_agent_binding(self):
+        """Verifies templates/triage-pair.template.yaml binds custom protocol agents without spawning Claude/Codex."""
+        import yaml
+        from pathlib import Path
+        
+        template_path = Path(__file__).parent / "templates" / "triage-pair.template.yaml"
+        self.assertTrue(template_path.exists(), "Template file must exist")
+        
+        content = template_path.read_text(encoding="utf-8")
+        data = yaml.safe_load(content)
+        
+        self.assertEqual(data.get("version"), 2)
+        resources = data.get("resources", {})
+        self.assertIn("triage_room", resources)
+        
+        room = resources["triage_room"]
+        self.assertEqual(room.get("type"), "room")
+        self.assertIn("taskflow-triage", room.get("agents", []))
+        self.assertIn("taskflow-worker", room.get("agents", []))
+        
+        # Verify it does NOT define managed agent resources that force Claude/Codex CLI providers
+        for key, res in resources.items():
+            if res.get("type") == "agent":
+                provider = res.get("provider", "")
+                self.assertNotIn("claude", str(provider).lower())
+                self.assertNotIn("codex", str(provider).lower())
+        
+        # Verify instructions mention running bot.py
+        self.assertIn("python bot.py", content)
+
 
 if __name__ == "__main__":
     unittest.main()
