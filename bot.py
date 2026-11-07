@@ -49,6 +49,7 @@ from deduplication import (
     default_task_deduplicator,
     default_room_buffer_store,
 )
+from rate_limiter import RoomRateLimiter, default_room_rate_limiter
 from security import validate_auto_post_safety, detect_prompt_injection
 from user_resolver import default_user_resolver
 from interactions import InteractionDispatcher, handle_confirm_assignment
@@ -87,6 +88,9 @@ task_deduplicator = default_task_deduplicator
 # Sliding window buffer per room: keeps the last 15 messages for context
 # Backed by SQLite persistence (taskflow_state.db) across restarts
 room_buffers = default_room_buffer_store
+
+# Per-room rate limiter: guards against LLM cost DoS and runaway API expenditure
+room_rate_limiter = default_room_rate_limiter
 
 # Action keywords for ambient triage policy
 ACTION_KEYWORDS = [
@@ -177,6 +181,29 @@ async def handle_triage_message(client: SwitchAgentClient, payload: Dict[str, An
         from jobs.triage_channel import ChannelTriageJob
         job = ChannelTriageJob(triage_client=client, room_id=room_id)
         await asyncio.to_thread(job.run, limit=50, post_digest=True)
+        return
+
+    # Guardrail: Per-Room Rate Limit check (LLM Cost DoS Prevention)
+    allowed, retry_after, limit_reason = room_rate_limiter.check_and_acquire(room_id, cost=1)
+    if not allowed:
+        logger.warning(
+            "🛑 [Triage] Room [%s] exceeded LLM rate limit (Cost DoS Guardrail, retry_after=%ds): %s",
+            room_id[:8] if room_id else "", retry_after, limit_reason
+        )
+        if is_addressed_to_us:
+            throttle_reply = (
+                f"🛡️ @{sender_name} **[Rate Limit: LLM Cost DoS Protection]**\n"
+                f"This room has reached its LLM processing quota ({room_rate_limiter.max_requests} requests per {int(room_rate_limiter.window_seconds)}s).\n"
+                f"Please retry in **{retry_after} seconds**.\n"
+                f"*(Per-room rate limiting prevents runaway API costs and service starvation)*"
+            )
+            await asyncio.to_thread(
+                client.send_targeted_message,
+                body=throttle_reply,
+                target_names=[sender_name],
+                thread_id=thread_id,
+                room_id=room_id
+            )
         return
 
     # Agent 1: Classify conversation buffer in worker thread
@@ -552,6 +579,29 @@ async def handle_worker_message(client: SwitchAgentClient, payload: Dict[str, An
         deadline=handoff.deadline,
     )
     context_msgs = [SlackMessage(**m) for m in (handoff.recent_context or [])]
+
+    # Guardrail: Per-Room Rate Limit check for worker execution (LLM Cost DoS Prevention)
+    active_room = room_id or handoff.room_id or client.room_id or "default_room"
+    allowed, retry_after, limit_reason = room_rate_limiter.check_and_acquire(active_room, cost=1)
+    if not allowed:
+        logger.warning(
+            "🛑 [Worker] Deliverable execution throttled for room [%s] (Cost DoS Guardrail): %s",
+            active_room[:8], limit_reason
+        )
+        throttle_msg = (
+            f"⏳ @{handoff.requester_name or sender_name} **[TaskFlow Rate Limit: LLM Cost DoS Protection]**\n\n"
+            f"Worker execution for **'{handoff.task_title}'** was throttled because this room has reached its LLM quota.\n"
+            f"Please wait **{retry_after} seconds** before triggering additional worker executions."
+        )
+        target_users = [handoff.requester_name or sender_name]
+        await asyncio.to_thread(
+            client.send_targeted_message,
+            body=throttle_msg,
+            target_names=target_users,
+            thread_id=thread_id,
+            room_id=active_room
+        )
+        return
 
     # Execute task according to autonomy mode
     if handoff.execution_type == ExecutionType.AUTO_EXECUTE:

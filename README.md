@@ -158,11 +158,11 @@ python simulate_switch_interaction.py
 - **Scenario 2 (`HUMAN_TODO`):** Simulates Sarah posting an ambient database todo $\rightarrow$ Triage detects action item $\rightarrow$ Worker scaffolds 3-step action checklist $\rightarrow$ Delivers targeted receipt.
 - **Scenario 3 (Sliding Window Deduplication):** Simulates follow-up banter in the sliding context window $\rightarrow$ Semantic deduplicator screens tokens and suppresses duplicate task firing.
 
-### Run the Complete Test Suite (106/106 Passing):
+### Run the Complete Test Suite (115/115 Passing):
 ```bash
 python -m unittest discover
 ```
-*Executes all 106 unit and integration tests covering LLM retries/backoff, Claude structured JSON, model-id startup probes, SQLite dedup & room buffer persistence across restarts, pending approvals, prompt injection defense, secret leakage DLP gates, channel backlog triage jobs, Todoist idempotency & 429 retry, grounded context resolution, WebSocket heartbeat liveness, and multi-agent coordination in under 3 seconds!*
+*Executes all 115 unit and integration tests covering per-room LLM cost DoS rate limiting, LLM retries/backoff, Claude structured JSON, model-id startup probes, SQLite dedup & room buffer persistence across restarts, pending approvals, prompt injection defense, secret leakage DLP gates, channel backlog triage jobs, Todoist idempotency & 429 retry, grounded context resolution, WebSocket heartbeat liveness, and multi-agent coordination in under 4 seconds!*
 
 ---
 
@@ -314,6 +314,7 @@ switch-taskflow/
 ├── test_room_tasks.py                # Room task store & Todoist 4xx diagnostics test suite
 ├── test_switch_approval_commands.py  # Switch room approval commands (@taskflow-worker approve/dismiss) test suite
 ├── test_llm_gateway.py               # LLM retries/backoff, Claude structured JSON & probe test suite
+├── test_rate_limiter.py              # Per-room LLM Cost DoS rate limiter test suite
 ├── ROOM_BRIEFING.md                  # Comprehensive room instructions & operational guide
 ├── pyproject.toml                    # Package metadata & pinned dependencies
 ├── requirements.txt                  # Python dependencies
@@ -329,5 +330,5 @@ switch-taskflow/
 * **Powered by:** Switch AI Core (`switchagents.ai` / SandboxAQ)
 * **GitHub Repository:** [https://github.com/An16og/switch-taskflow](https://github.com/An16og/switch-taskflow)
 * **Declarative Template:** [`templates/triage-pair.template.yaml`](file:///C:/Users/anujj/OneDrive/Desktop/switch-taskflow/templates/triage-pair.template.yaml) (Switch Version 2 Room Briefing & Scaffolding)
-* **Test Suite:** 106 Unit & Integration Tests Passing (100% Green)
+* **Test Suite:** 115 Unit & Integration Tests Passing (100% Green)
 * **License:** MIT

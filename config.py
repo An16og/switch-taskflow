@@ -70,6 +70,11 @@ ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-3-5-sonnet-20241022").str
 LLM_MAX_RETRIES = int(os.getenv("LLM_MAX_RETRIES", "3").strip() or 3)
 LLM_INITIAL_BACKOFF = float(os.getenv("LLM_INITIAL_BACKOFF", "0.5").strip() or 0.5)
 
+# Room Rate Limiting (LLM Cost DoS Prevention)
+ROOM_RATE_LIMIT_ENABLED = os.getenv("ROOM_RATE_LIMIT_ENABLED", "true").strip().lower() in ("true", "1", "yes")
+ROOM_RATE_LIMIT_REQUESTS = int(os.getenv("ROOM_RATE_LIMIT_REQUESTS", "15").strip() or 15)
+ROOM_RATE_LIMIT_WINDOW_SECONDS = float(os.getenv("ROOM_RATE_LIMIT_WINDOW_SECONDS", "60.0").strip() or 60.0)
+
 # TaskFlow Persistent State Storage (SQLite)
 TASKFLOW_STATE_DB = os.getenv("TASKFLOW_STATE_DB", "taskflow_state.db").strip()
 
