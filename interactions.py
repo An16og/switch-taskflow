@@ -9,6 +9,7 @@ posting into original channels or side-effects.
 import logging
 from typing import Dict, Any, Optional, List, Tuple
 from approvals import PendingApprovalStore, default_approval_store, ApprovalStatus, PendingApproval
+from room_tasks import default_room_task_store, RoomTask
 from slack_cards import (
     parse_button_payload,
     build_unauthorized_action_card,
@@ -173,6 +174,8 @@ class InteractionDispatcher:
         )
 
         todoist_url = None
+        todoist_error = None
+        room_task = None
         if action_type in ("approve", "accept", "confirm"):
             target_status = ApprovalStatus.APPROVED
 
@@ -212,6 +215,24 @@ class InteractionDispatcher:
                     "approval": appr
                 }
 
+            # Register native task in Switch Room Task Store for tracking
+            if action_type in ("accept", "confirm") or getattr(appr, "execution_type", None) != "AUTO_EXECUTE":
+                try:
+                    room_task = default_room_task_store.create_task(
+                        title=appr.action_summary,
+                        room_id=appr.room_id or "default_room",
+                        assignee_name=appr.assignee_name or "Team",
+                        assignee_id=appr.assignee_id,
+                        assigner_name=user_name or appr.assigner_name or "Team Member",
+                        assigner_id=user_id or appr.assigner_id,
+                        deadline=appr.deadline,
+                        execution_type="HUMAN_TODO",
+                        action_plan=appr.artifact_content,
+                        context_notes=appr.context_notes,
+                    )
+                except Exception as e:
+                    logger.warning("Failed recording native room task on approval: %s", e)
+
             # Execute side effect: post to room/channel if AUTO_EXECUTE
             if auto_post_on_approval and action_type == "approve" and self.switch_client and hasattr(self.switch_client, "post_message"):
                 try:
@@ -229,7 +250,7 @@ class InteractionDispatcher:
                 except Exception as e:
                     logger.error("Failed to post approved artifact: %s", e)
 
-            # Execute side effect: sync to Todoist if accept/todoist/confirm
+            # Execute side effect: sync to Todoist if configured (with clear 4xx diagnostics)
             if self.todoist_client and hasattr(self.todoist_client, "create_task"):
                 try:
                     todo_res = self.todoist_client.create_task(
@@ -237,9 +258,25 @@ class InteractionDispatcher:
                         description=f"Assigned by: @{user_name or appr.assigner_name}\n\nAction Plan:\n{appr.artifact_content}",
                         due_string=appr.deadline
                     )
-                    todoist_url = todo_res.get("url")
+                    if isinstance(todo_res, dict):
+                        todoist_url = todo_res.get("url")
+                    elif hasattr(todo_res, "url"):
+                        todoist_url = todo_res.url
+                    if room_task and todoist_url:
+                        room_task.todoist_url = todoist_url
+                        default_room_task_store._save()
                 except Exception as e:
+                    todoist_error = str(e)
+                    if room_task:
+                        room_task.todoist_error = todoist_error
+                        default_room_task_store._save()
                     logger.warning("Todoist sync failed on approval: %s", e)
+
+            if not todoist_url and hasattr(self.todoist_client, "last_error") and self.todoist_client.last_error:
+                todoist_error = self.todoist_client.last_error
+                if room_task:
+                    room_task.todoist_error = todoist_error
+                    default_room_task_store._save()
 
             # Execute side effect: When CONFIRM (medium confidence path confirmed),
             # forward the preserved worker checklist to the assignee natively or via Slack DM
@@ -309,7 +346,9 @@ class InteractionDispatcher:
             resolved_by=user_name or user_id or "authorized_user",
             artifact_title=appr.artifact_title,
             todoist_url=todoist_url,
-            permalink=appr.permalink
+            permalink=appr.permalink,
+            task_id=room_task.task_id if room_task else None,
+            todoist_error=todoist_error
         )
 
         return {
@@ -318,7 +357,10 @@ class InteractionDispatcher:
             "status": target_status.value,
             "reason": auth_reason,
             "blocks": resolution_blocks,
-            "approval": resolved_appr
+            "approval": resolved_appr,
+            "task_id": room_task.task_id if room_task else None,
+            "todoist_url": todoist_url,
+            "todoist_error": todoist_error
         }
 
 
@@ -407,8 +449,26 @@ def handle_confirm_assignment(
             user_name=assigner_name
         )
 
-    # 5. Sync to Todoist if configured
+    # 5. Native Room Task Tracking & Sync to Todoist if configured
+    room_task = None
+    try:
+        room_task = default_room_task_store.create_task(
+            title=action_summary,
+            room_id=appr.room_id if appr else (channel_id or "default_room"),
+            assignee_name=target_name,
+            assignee_id=target_id,
+            assigner_name=assigner_name or "Team Member",
+            assigner_id=assigner_id,
+            deadline=deadline,
+            execution_type="HUMAN_TODO",
+            action_plan=action_plan,
+            context_notes=appr.context_notes if appr else None,
+        )
+    except Exception as e:
+        log.warning("Failed recording native room task on confirm: %s", e)
+
     todoist_url = None
+    todoist_error = None
     if todoist_client and hasattr(todoist_client, "create_task"):
         try:
             todo_res = todoist_client.create_task(
@@ -416,9 +476,25 @@ def handle_confirm_assignment(
                 description=f"Assigned by: <@{assigner_id}>\n\nAction Plan:\n{action_plan}",
                 due_string=deadline
             )
-            todoist_url = todo_res.get("url") if isinstance(todo_res, dict) else None
+            if isinstance(todo_res, dict):
+                todoist_url = todo_res.get("url")
+            elif hasattr(todo_res, "url"):
+                todoist_url = todo_res.url
+            if room_task and todoist_url:
+                room_task.todoist_url = todoist_url
+                default_room_task_store._save()
         except Exception as e:
+            todoist_error = str(e)
+            if room_task:
+                room_task.todoist_error = todoist_error
+                default_room_task_store._save()
             log.warning("Todoist task creation failed: %s", e)
+
+    if not todoist_url and hasattr(todoist_client, "last_error") and todoist_client.last_error:
+        todoist_error = todoist_client.last_error
+        if room_task:
+            room_task.todoist_error = todoist_error
+            default_room_task_store._save()
 
     # 6. Forward human todo card to the assignee with the FULL worker checklist
     if target_id and client:
@@ -446,10 +522,12 @@ def handle_confirm_assignment(
 
     return {
         "success": True,
+        "task_id": room_task.task_id if room_task else None,
         "action_summary": action_summary,
         "assignee_id": target_id,
         "action_plan": action_plan,
         "todoist_url": todoist_url,
+        "todoist_error": todoist_error,
     }
 
 

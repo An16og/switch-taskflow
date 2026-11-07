@@ -30,10 +30,13 @@ from config import (
 )
 from switch_client import SwitchAgentClient
 from user_resolver import default_user_resolver
+from todoist_client import TodoistClient
+from room_tasks import default_room_task_store
 
 gateway = LLMGateway()
 triage_agent = TriageAgent(gateway=gateway)
 worker_agent = WorkerAgent(gateway=gateway)
+todoist_client = TodoistClient()
 slack_client = WebClient(token=SLACK_BOT_TOKEN) if SLACK_BOT_TOKEN else None
 
 # Initialize Switch client if configured (On Switch, use send_targeted_message instead of Slack DMs)
@@ -185,8 +188,56 @@ def run_simulation(choice: str):
             category=triage.execution_category,
             permalink="https://slack.com"
         )
+    room_task = None
+    todoist_url = None
+    todoist_error = None
+
+    if triage.execution_type == ExecutionType.AUTO_EXECUTE:
+        blocks = build_auto_execute_card(
+            action_summary=triage.action_summary,
+            deliverable_content=worker_res.artifact_content,
+            artifact_title=worker_res.artifact_title,
+            category=triage.execution_category,
+            permalink="https://slack.com"
+        )
     else:
         print(f"   📌 Human Task Prepared with Action Checklist:\n{worker_res.artifact_content}")
+        
+        # 1. Native Switch Room Task Tracking
+        room_task = default_room_task_store.create_task(
+            title=triage.action_summary,
+            room_id=SWITCH_ROOM_ID or "simulated_room",
+            assignee_name=MY_USER_NAME,
+            assignee_id=MY_USER_ID,
+            assigner_name=scenario["messages"][0].user_name,
+            assigner_id=scenario["messages"][0].user_id,
+            deadline=triage.deadline,
+            execution_type="HUMAN_TODO",
+            action_plan=worker_res.artifact_content,
+            context_notes=triage.context_notes,
+        )
+        print(f"   🎯 [Native Switch Room Task] Recorded Task ID: `{room_task.task_id}` in Room '{room_task.room_id}'")
+
+        # 2. Optional Todoist Sync with 4xx diagnostics
+        sync_res = todoist_client.sync_task(
+            content=f"[{MY_USER_NAME}] {triage.action_summary}",
+            description=f"Assigned by: @{scenario['messages'][0].user_name}\n\nAction Plan:\n{worker_res.artifact_content}",
+            due_string=triage.deadline
+        )
+        if sync_res.success:
+            todoist_url = sync_res.task_url
+            room_task.todoist_url = todoist_url
+            default_room_task_store._save()
+            print(f"   ✅ [Todoist Sync] Task synced to Todoist: {todoist_url}")
+        else:
+            todoist_error = sync_res.error_message
+            room_task.todoist_error = todoist_error
+            default_room_task_store._save()
+            if sync_res.is_client_error:
+                print(f"   ⚠️ [Todoist Sync Notice] {sync_res.error_message}")
+            else:
+                print(f"   ℹ️ [Todoist Sync] Native room only: {sync_res.error_message}")
+
         blocks = build_human_todo_card(
             action_summary=triage.action_summary,
             assigner_id=scenario["messages"][0].user_id,
@@ -214,9 +265,18 @@ def run_simulation(choice: str):
                     f"*(Delivered natively via Switch send_targeted_message)*"
                 )
             else:
+                sync_line = f"• **External Sync:** [View in Todoist]({todoist_url})\n" if todoist_url else (
+                    f"• ⚠️ **External Sync Notice:** {todoist_error}\n" if todoist_error else
+                    "• **External Sync:** Native room only (Todoist unconfigured)\n"
+                )
                 switch_body = (
-                    f"@{MY_USER_NAME} 📌 **[HUMAN_TODO] Task Handed Off: {triage.action_summary}**\n\n"
-                    f"**Action Checklist:**\n{worker_res.artifact_content}\n\n"
+                    f"@{MY_USER_NAME} 🎯 **Task Tracked in Switch Room**\n\n"
+                    f"• **Task ID:** `{room_task.task_id if room_task else 'N/A'}`\n"
+                    f"• **Task:** {triage.action_summary}\n"
+                    f"• **Due Date:** {triage.deadline or 'Not specified'}\n"
+                    f"• **Status:** `PENDING` (Native Switch Workroom)\n"
+                    f"{sync_line}\n"
+                    f"📋 **Action Checklist:**\n{worker_res.artifact_content}\n\n"
                     f"*(Delivered natively via Switch send_targeted_message)*"
                 )
             switch_client.send_targeted_message(
@@ -250,10 +310,18 @@ def run_simulation(choice: str):
     # 3. Simulated / Offline preview
     if not switch_dispatched and not slack_dispatched:
         print(f"📋 [Simulated Dispatch Preview]")
-        print(f"• Switch Workroom: send_targeted_message(target_names=['{MY_USER_NAME}'])")
+        if room_task:
+            print(f"• Switch Workroom: Recorded native task {room_task.task_id} in room '{room_task.room_id}'")
+            if todoist_url:
+                print(f"• External Sync:   Synced to Todoist -> {todoist_url}")
+            elif todoist_error:
+                print(f"• External Sync:   {todoist_error}")
+            else:
+                print(f"• External Sync:   Native room only (Todoist unconfigured)")
+        print(f"• Switch Delivery: send_targeted_message(target_names=['{MY_USER_NAME}'])")
         print(f"• Slack Bridge:    conversations.open(users=['{MY_USER_ID}']) -> chat_postMessage(channel=dm_channel)")
         print(f"✓ Task deliverable successfully formatted and verified for @{MY_USER_NAME} (<@{MY_USER_ID}>)!")
-        print(f"ℹ️ (Note: On Switch, use send_targeted_message instead of Slack DMs).")
+        print(f"ℹ️ (Note: On Switch, work stays natively in the room and uses send_targeted_message).")
 
 
 if __name__ == "__main__":

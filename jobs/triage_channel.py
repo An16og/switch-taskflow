@@ -33,6 +33,7 @@ from switch_client import SwitchAgentClient
 from agents.triage_agent import TriageAgent
 from agents.worker_agent import WorkerAgent
 from todoist_client import TodoistClient
+from room_tasks import default_room_task_store
 from security import sanitize_channel_text, detect_prompt_injection, validate_auto_post_safety
 from deduplication import TaskDeduplicator
 from user_resolver import default_user_resolver
@@ -283,23 +284,66 @@ class ChannelTriageJob:
                     participants=self.triage_client.list_participants(self.room_id),
                 )
 
+                # 1. Register task natively in Switch Room Task Store
+                room_task = default_room_task_store.create_task(
+                    title=res.action_summary,
+                    room_id=self.room_id,
+                    assignee_name=assignee,
+                    assignee_id=assignee_id,
+                    assigner_name=requester,
+                    assigner_id=item.get("requester_id"),
+                    deadline=res.deadline,
+                    execution_type="HUMAN_TODO",
+                    action_plan=exec_result.artifact_content,
+                    context_notes=res.context_notes,
+                )
+
+                # 2. Optional Todoist Sync with 4xx diagnostics
                 todoist_task = None
-                task_url = "https://todoist.com/app"
-                if not dry_run and self.todoist_client.api_token:
-                    todoist_task = self.todoist_client.create_task(
-                        content=res.action_summary,
-                        description=exec_result.artifact_content,
-                        due_string=res.deadline
-                    )
-                    if todoist_task and getattr(todoist_task, "url", None):
-                        task_url = todoist_task.url
+                task_url = None
+                todoist_error = None
+                if not dry_run and self.todoist_client:
+                    if hasattr(self.todoist_client, "create_task"):
+                        try:
+                            todoist_task = self.todoist_client.create_task(
+                                content=res.action_summary,
+                                description=exec_result.artifact_content,
+                                due_string=res.deadline
+                            )
+                            if todoist_task:
+                                if isinstance(todoist_task, dict):
+                                    task_url = todoist_task.get("url")
+                                elif getattr(todoist_task, "url", None):
+                                    task_url = todoist_task.url
+                                room_task.todoist_url = task_url
+                                default_room_task_store._save()
+                        except Exception as e:
+                            todoist_error = str(e)
+                            room_task.todoist_error = todoist_error
+                            default_room_task_store._save()
+
+                    if not task_url and hasattr(self.todoist_client, "last_error") and self.todoist_client.last_error:
+                        todoist_error = self.todoist_client.last_error
+                        room_task.todoist_error = todoist_error
+                        default_room_task_store._save()
+
+                # Build sync line for receipt
+                if task_url:
+                    sync_line = f"• **External Sync:** [View in Todoist]({task_url})"
+                elif todoist_error:
+                    sync_line = f"• ⚠️ **External Sync Notice:** {todoist_error}"
+                else:
+                    sync_line = "• **External Sync:** Native room only (Todoist unconfigured)"
 
                 receipt = (
                     f"@{assignee} 🎯 **Task Tracked from Channel Triage**\n\n"
-                    f"**Task:** {res.action_summary}\n"
-                    f"**Assignee:** @{assignee}\n"
-                    f"**Due Date:** {res.deadline or 'Not specified'}\n"
-                    f"**Todoist Task:** [Open in Todoist]({task_url})\n\n"
+                    f"• **Task ID:** `{room_task.task_id}`\n"
+                    f"• **Task:** {res.action_summary}\n"
+                    f"• **Assignee:** @{assignee}\n"
+                    f"• **Assigned by:** @{requester}\n"
+                    f"• **Due Date:** {res.deadline or 'Not specified'}\n"
+                    f"• **Status:** `PENDING` (Native Switch Workroom)\n"
+                    f"{sync_line}\n\n"
                     f"📋 **Action Checklist:**\n{exec_result.artifact_content}\n\n"
                     f"*(Triaged during Channel Backlog Scan)*"
                 )
@@ -312,10 +356,12 @@ class ChannelTriageJob:
                     )
 
                 human_todos.append({
+                    "task_id": room_task.task_id,
                     "title": res.action_summary,
                     "assignee": assignee,
                     "deadline": res.deadline or "None",
                     "task_url": task_url,
+                    "todoist_error": todoist_error,
                     "checklist": exec_result.artifact_content,
                 })
 
@@ -328,7 +374,7 @@ class ChannelTriageJob:
             f"• 💬 Messages Analyzed: **{len(cleaned_messages)}**",
             f"• 🔍 Actionable Tasks Detected: **{len(triaged_tasks)}**",
             f"• ⚡ Knowledge Deliverables Auto-Drafted: **{len(auto_executed)}**",
-            f"• 📌 Human Action Plans Synced to Todoist: **{len(human_todos)}**",
+            f"• 📌 Human To-Dos Tracked in Room: **{len(human_todos)}**",
             "",
             "---",
         ]
@@ -342,9 +388,14 @@ class ChannelTriageJob:
         if human_todos:
             digest_lines.append("\n### 📌 Human To-Dos Tracked:")
             for item in human_todos:
-                digest_lines.append(f"- **{item['title']}**")
+                digest_lines.append(f"- **{item['title']}** (`{item['task_id']}`)")
                 digest_lines.append(f"  • Assignee: @{item['assignee']} | Deadline: `{item['deadline']}`")
-                digest_lines.append(f"  • Todoist: [View Task in Todoist]({item['task_url']})")
+                if item.get("task_url"):
+                    digest_lines.append(f"  • Todoist: [View Task in Todoist]({item['task_url']})")
+                elif item.get("todoist_error"):
+                    digest_lines.append(f"  • ⚠️ Sync Notice: {item['todoist_error']}")
+                else:
+                    digest_lines.append("  • Storage: Tracked natively in Switch Workroom")
 
         if not auto_executed and not human_todos:
             digest_lines.append("\n✅ **Channel is fully up to date!** No outstanding action items detected.")

@@ -40,6 +40,7 @@ from llm_gateway import LLMGateway
 from agents.triage_agent import TriageAgent
 from agents.worker_agent import WorkerAgent
 from todoist_client import TodoistClient
+from room_tasks import default_room_task_store
 from switch_client import SwitchAgentClient
 from deduplication import TaskDeduplicator
 from security import validate_auto_post_safety, detect_prompt_injection
@@ -419,31 +420,57 @@ async def handle_worker_message(client: SwitchAgentClient, payload: Dict[str, An
             room_id
         )
 
+        # 1. Register task natively in Switch Room Task Store
+        room_task = default_room_task_store.create_task(
+            title=handoff.task_title,
+            room_id=handoff.room_id or client.room_id or "",
+            assignee_name=handoff.assignee_name,
+            assignee_id=handoff.assignee_id,
+            assigner_name=handoff.assigner_name,
+            assigner_id=handoff.assigner_id,
+            deadline=handoff.deadline,
+            execution_type=handoff.execution_type.value if hasattr(handoff.execution_type, "value") else str(handoff.execution_type),
+            action_plan=worker_result.artifact_content,
+            context_notes=handoff.context_notes,
+        )
+
         task_description = (
             f"Assigned by: @{handoff.assigner_name}\n"
             f"Context: {handoff.context_notes or 'Captured via TaskFlow on Switch'}\n\n"
             f"Action Plan Checklist:\n{worker_result.artifact_content}"
         )
 
-        todoist_res = await asyncio.to_thread(
-            todoist.create_task,
+        # 2. Optional Todoist Sync with 4xx diagnostics
+        sync_res = await asyncio.to_thread(
+            todoist.sync_task,
             content=f"[{handoff.assignee_name}] {handoff.task_title}",
             description=task_description,
             due_string=handoff.deadline,
         )
 
-        task_url = (todoist_res or {}).get("url") if isinstance(todoist_res, dict) else None
+        task_url = sync_res.task_url if sync_res.success else None
         if task_url:
-            tracker_line = f"**Todoist Task:** [Open in Todoist]({task_url})\n\n"
+            room_task.todoist_url = task_url
+            default_room_task_store._save()
+            tracker_line = f"• **External Sync:** [View in Todoist]({task_url})\n\n"
+        elif sync_res.error_message:
+            room_task.todoist_error = sync_res.error_message
+            default_room_task_store._save()
+            if sync_res.is_client_error:
+                tracker_line = f"• ⚠️ **External Sync Notice:** {sync_res.error_message}\n\n"
+            else:
+                tracker_line = f"• **External Sync:** Native room only ({sync_res.error_message})\n\n"
         else:
-            tracker_line = f"**Status:** Tracked natively in Switch Workroom\n\n"
+            tracker_line = "• **External Sync:** Native room only (Todoist unconfigured)\n\n"
 
         receipt_text = (
-            f"🎯 **Task Handed Off & Tracked**\n\n"
-            f"**Task:** {handoff.task_title}\n"
-            f"**Assignee:** @{handoff.assignee_name}\n"
-            f"**Assigned by:** @{handoff.assigner_name}\n"
-            f"**Due Date:** {handoff.deadline or 'Not specified'}\n"
+            f"🎯 **Task Tracked in Switch Room**\n\n"
+            f"• **Task ID:** `{room_task.task_id}`\n"
+            f"• **Task:** {handoff.task_title}\n"
+            f"• **Assignee:** @{handoff.assignee_name}\n"
+            f"• **Assigned by:** @{handoff.assigner_name}\n"
+            f"• **Due Date:** {handoff.deadline or 'Not specified'}\n"
+            f"• **Status:** `{room_task.status.value}` (Native Switch Workroom)\n"
             f"{tracker_line}"
             f"📋 **Action Checklist:**\n{worker_result.artifact_content}\n\n"
             f"*(Scaffolded by @taskflow-worker via Switch targeted room message)*"
@@ -461,7 +488,7 @@ async def handle_worker_message(client: SwitchAgentClient, payload: Dict[str, An
             room_id=handoff.room_id or client.room_id or "",
             action_summary=handoff.task_title
         )
-        logger.info("✅ [Worker] Created Todoist task & sent targeted receipt to %s.", target_users)
+        logger.info("✅ [Worker] Recorded Switch room task %s & sent targeted receipt to %s.", room_task.task_id, target_users)
 
 
 # ==============================================================================

@@ -520,6 +520,8 @@ def build_approval_resolution_card(
     artifact_title: Optional[str] = None,
     todoist_url: Optional[str] = None,
     permalink: Optional[str] = None,
+    task_id: Optional[str] = None,
+    todoist_error: Optional[str] = None,
 ) -> list:
     """Generates confirmation blocks to replace interactive buttons after an authorized user clicks."""
     status_upper = status.upper()
@@ -536,10 +538,14 @@ def build_approval_resolution_card(
         status_text,
         f"📌 *Task:* {action_summary}",
     ]
+    if task_id:
+        lines.append(f"🎯 *Switch Task ID:* `{task_id}`")
     if artifact_title:
         lines.append(f"📄 *Artifact:* {artifact_title}")
     if todoist_url:
         lines.append(f"📋 <{todoist_url}|View in Todoist>")
+    elif todoist_error:
+        lines.append(f"⚠️ *Sync Notice:* {todoist_error}")
     if permalink:
         lines.append(f"🔗 <{permalink}|Original Slack Message>")
 
@@ -558,18 +564,25 @@ def build_receipt_blocks(
     action_summary: str,
     deadline: Optional[str],
     permalink: Optional[str],
-    todoist_url: Optional[str] = None
+    todoist_url: Optional[str] = None,
+    task_id: Optional[str] = None,
+    todoist_error: Optional[str] = None,
 ) -> list:
     """Card sent after task creation/sync to confirm state."""
+    header = "✅ *Task added to Todoist!*" if todoist_url else "✅ *Task Tracked in Switch Room!*"
     text_lines = [
-        "✅ *Task added to Todoist!*",
+        header,
         f"📌 *Task:* {action_summary}",
         f"⏰ *Due:* {deadline or 'None'}"
     ]
+    if task_id:
+        text_lines.append(f"🎯 *Task ID:* `{task_id}`")
     if permalink:
         text_lines.append(f"🔗 <{permalink}|Slack Thread>")
     if todoist_url:
         text_lines.append(f"📋 <{todoist_url}|Open in Todoist>")
+    elif todoist_error:
+        text_lines.append(f"⚠️ *Sync Notice:* {todoist_error}")
 
     return [
         {

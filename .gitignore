@@ -25,6 +25,8 @@ desktop.ini
 *.log
 data/
 *.tmp
+room_tasks.json
+pending_approvals.json
 
 # Scratch & Local App Inspection Scripts (Not part of product)
 search_*.py
