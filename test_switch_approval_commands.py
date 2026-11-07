@@ -40,7 +40,7 @@ class TestSwitchApprovalCommands(unittest.TestCase):
         )
         self.assertEqual(
             parse_approval_command("@taskflow-worker confirm appr_11223344"),
-            ("approve", "appr_11223344")
+            ("confirm", "appr_11223344")
         )
 
         # Directly addressed without @-prefix
@@ -252,6 +252,124 @@ class TestSwitchApprovalCommands(unittest.TestCase):
         # Check status is DISMISSED in store
         dismissed = default_approval_store.get_approval(appr.approval_id)
         self.assertEqual(dismissed.status, ApprovalStatus.DISMISSED)
+
+    def test_medium_confidence_human_todo_asks_assigner_and_keeps_checklist(self):
+        """Verifies that medium-confidence tasks hold for assigner confirmation and preserve worker checklist."""
+        mock_client = MagicMock()
+        mock_client.agent_id = "agent_worker_1"
+        mock_client.room_id = "room_beta"
+        mock_client.send_targeted_message = MagicMock()
+
+        handoff = TaskHandoffMessage(
+            task_title="Investigate high latency in cache cluster",
+            execution_type=ExecutionType.HUMAN_TODO,
+            confidence=ConfidenceLevel.MEDIUM,
+            assignee_name="Alice",
+            assignee_id="U_ALICE",
+            assigner_name="Priya",
+            assigner_id="U_PRIYA",
+            room_id="room_beta",
+            thread_id="msg_200",
+            requester_name="Priya",
+        )
+
+        handoff_envelope = (
+            f"@taskflow-worker <!-- TASKFLOW_HANDOFF: {handoff.model_dump_json()} -->"
+        )
+        payload = {
+            "body": handoff_envelope,
+            "sender": "agent_triage_1",
+            "sender_name": "taskflow-triage",
+            "room_id": "room_beta",
+            "thread_id": "msg_200",
+        }
+
+        worker_plan = "* [ ] Step 1: Check Redis hit ratios\n* [ ] Step 2: Validate TCP keepalive"
+        with patch("bot.worker_executor.execute_task") as mock_exec:
+            mock_exec.return_value = WorkerExecutionResult(
+                artifact_title="Action Plan",
+                artifact_content=worker_plan,
+                execution_notes="Generated action plan"
+            )
+
+            asyncio.run(handle_worker_message(mock_client, payload))
+
+        # Assigner Priya must be targeted; Assignee Alice must NOT be paged yet
+        mock_client.send_targeted_message.assert_called_once()
+        call_args = mock_client.send_targeted_message.call_args[1]
+        self.assertEqual(call_args["target_names"], ["Priya"])
+        self.assertNotIn("Alice", call_args["target_names"])
+
+        # Message must contain the preserved worker checklist
+        body = call_args["body"]
+        self.assertIn("Did you mean to assign this?", body)
+        self.assertIn("Step 1: Check Redis hit ratios", body)
+        self.assertIn("Step 2: Validate TCP keepalive", body)
+        self.assertIn("@taskflow-worker confirm", body)
+
+        # Pending approval must be stored with action_type="ASSIGNMENT" and worker checklist preserved
+        import re
+        m = re.search(r"`(appr_[a-f0-9]+)`", body)
+        self.assertTrue(m, "Card must include approval_id")
+        appr_id = m.group(1)
+
+        appr = default_approval_store.get_approval(appr_id)
+        self.assertIsNotNone(appr)
+        self.assertEqual(appr.action_type, "ASSIGNMENT")
+        self.assertEqual(appr.artifact_content, worker_plan)
+        self.assertEqual(appr.status, ApprovalStatus.PENDING)
+
+    def test_assigner_can_confirm_medium_confidence_assignment_and_page_assignee(self):
+        """Verifies that assigner running confirm executes side effects and pages assignee with worker checklist."""
+        worker_plan = "* [ ] Step 1: Inspect database locks\n* [ ] Step 2: Kill runaway query"
+        appr = default_approval_store.create_approval(
+            action_summary="Fix database query bottleneck",
+            artifact_content=worker_plan,
+            artifact_title="Task Assignment: Fix database query bottleneck",
+            action_type="ASSIGNMENT",
+            assignee_name="Alice",
+            assignee_id="U_ALICE",
+            assigner_name="Priya",
+            assigner_id="U_PRIYA",
+            room_id="room_gamma",
+            allowed_user_names=["Priya"],
+            allowed_user_ids=["U_PRIYA"],
+            allowed_roles=["owner", "admin", "lead", "operator"],
+        )
+
+        mock_client = MagicMock()
+        mock_client.agent_id = "agent_worker_1"
+        mock_client.room_id = "room_gamma"
+        mock_client.post_message = MagicMock()
+        mock_client.send_targeted_message = MagicMock()
+
+        cmd_payload = {
+            "body": f"@taskflow-worker confirm {appr.approval_id}",
+            "sender": "U_PRIYA",
+            "sender_name": "Priya",
+            "room_id": "room_gamma",
+            "thread_id": "msg_201",
+        }
+
+        asyncio.run(handle_worker_message(mock_client, cmd_payload))
+
+        # Assignee Alice must be paged via targeted message with worker checklist
+        mock_client.send_targeted_message.assert_called_once()
+        target_call = mock_client.send_targeted_message.call_args[1]
+        self.assertEqual(target_call["target_names"], ["Alice"])
+        self.assertIn("Step 1: Inspect database locks", target_call["body"])
+        self.assertIn("Step 2: Kill runaway query", target_call["body"])
+
+        # Room receipt must be posted
+        mock_client.post_message.assert_called_once()
+        post_call = mock_client.post_message.call_args[1]["body"]
+        self.assertIn("Task Confirmed & Assigned", post_call)
+        self.assertIn("@Alice", post_call)
+
+        # Status must be resolved to APPROVED
+        resolved = default_approval_store.get_approval(appr.approval_id)
+        self.assertEqual(resolved.status, ApprovalStatus.APPROVED)
+        self.assertEqual(resolved.resolved_by, "Priya")
 
 
 if __name__ == "__main__":

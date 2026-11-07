@@ -312,12 +312,12 @@ def parse_approval_command(body: str, addressed: bool = False) -> Optional[Tuple
         appr_id = m.group(2)
         if action == "reject":
             action = "dismiss"
-        elif action in ("confirm", "accept"):
-            action = "approve"
+        elif action == "accept":
+            action = "confirm"
         return action, appr_id
 
     # Pattern 2: Directly addressed to worker or command syntax starting with command
-    if addressed or clean_body.lower().startswith(("approve appr_", "dismiss appr_", "reject appr_")):
+    if addressed or clean_body.lower().startswith(("approve appr_", "dismiss appr_", "reject appr_", "confirm appr_", "accept appr_")):
         m2 = re.search(
             r"\b(approve|dismiss|reject|confirm|accept)\s+(appr_[a-f0-9]+)",
             clean_body,
@@ -328,8 +328,8 @@ def parse_approval_command(body: str, addressed: bool = False) -> Optional[Tuple
             appr_id = m2.group(2)
             if action == "reject":
                 action = "dismiss"
-            elif action in ("confirm", "accept"):
-                action = "approve"
+            elif action == "accept":
+                action = "confirm"
             return action, appr_id
 
     return None
@@ -426,13 +426,43 @@ async def handle_worker_message(client: SwitchAgentClient, payload: Dict[str, An
             logger.info("❌ [Worker] Dismissed approval %s by @%s", approval_id, sender_name)
             return
 
-        # If success and action was approve:
-        # Note: dispatcher.handle_interaction already broadcasted the full artifact to the room via client.post_message!
+        # If success and action was approve or confirm
+        appr_obj = res.get("approval")
+        is_assignment = getattr(appr_obj, "action_type", "") in ("ASSIGNMENT", "HUMAN_TODO") or action in ("confirm", "accept")
+
+        if is_assignment and appr_obj:
+            task_id_line = f"• **Task ID:** `{res.get('task_id')}`\n" if res.get('task_id') else ""
+            todoist_url = res.get('todoist_url')
+            todoist_error = res.get('todoist_error')
+            if todoist_url:
+                sync_line = f"• **External Sync:** [View in Todoist]({todoist_url})\n"
+            elif todoist_error:
+                sync_line = f"• ⚠️ **External Sync Notice:** {todoist_error}\n"
+            else:
+                sync_line = "• **External Sync:** Native room only\n"
+
+            confirm_receipt = (
+                f"🎯 **Task Confirmed & Assigned**\n\n"
+                f"• **Task:** {appr_obj.action_summary}\n"
+                f"• **Assignee:** @{appr_obj.assignee_name}\n"
+                f"• **Assigned by:** @{sender_name}\n"
+                f"• **Due Date:** {appr_obj.deadline or 'Not specified'}\n"
+                f"{task_id_line}"
+                f"{sync_line}\n"
+                f"*(Confirmed by @{sender_name}; action checklist forwarded to @{appr_obj.assignee_name})*"
+            )
+            await asyncio.to_thread(
+                client.post_message,
+                body=confirm_receipt,
+                thread_id=thread_id,
+                room_id=room_id
+            )
+
         task_deduplicator.mark_completed(
             room_id=room_id or client.room_id or "",
             action_summary=res["approval"].action_summary if res.get("approval") else approval_id
         )
-        logger.info("✅ [Worker] Successfully approved and published '%s' to room [%s] by @%s", approval_id, room_id, sender_name)
+        logger.info("✅ [Worker] Successfully %sd and resolved '%s' in room [%s] by @%s", action, approval_id, room_id, sender_name)
         return
 
     # Check if this message is intended for Worker
@@ -589,7 +619,7 @@ async def handle_worker_message(client: SwitchAgentClient, payload: Dict[str, An
         logger.info("📋 [Worker] Created pending approval %s and posted proposal card to room [%s].", approval.approval_id, handoff.room_id)
 
     elif handoff.execution_type == ExecutionType.HUMAN_TODO:
-        logger.info("📋 [Worker] Scaffolding action plan & creating Todoist task for: '%s'...", handoff.task_title)
+        logger.info("📋 [Worker] Scaffolding action plan for: '%s'...", handoff.task_title)
         worker_result: WorkerExecutionResult = await asyncio.to_thread(
             worker_executor.execute_task,
             triage_result,
@@ -599,7 +629,63 @@ async def handle_worker_message(client: SwitchAgentClient, payload: Dict[str, An
             room_id
         )
 
-        # 1. Register task natively in Switch Room Task Store
+        is_medium = (
+            handoff.confidence == ConfidenceLevel.MEDIUM
+            or str(getattr(handoff.confidence, "value", handoff.confidence)).upper() == "MEDIUM"
+        )
+
+        if is_medium:
+            # Medium-confidence path: Hold task for assigner confirmation before paging assignee!
+            # Keep the full AI worker-generated action checklist in the approval artifact and preview.
+            approval = default_approval_store.create_approval(
+                action_type="ASSIGNMENT",
+                action_summary=handoff.task_title,
+                artifact_title=f"Task Assignment: {handoff.task_title}",
+                artifact_content=worker_result.artifact_content,
+                assignee_name=handoff.assignee_name,
+                assignee_id=handoff.assignee_id,
+                assigner_name=handoff.assigner_name,
+                assigner_id=handoff.assigner_id,
+                category=handoff.execution_category or "Human Task",
+                deadline=handoff.deadline,
+                context_notes=handoff.context_notes,
+                room_id=handoff.room_id or client.room_id or "",
+                message_ts=handoff.thread_id,
+                allowed_user_names=[handoff.assigner_name] if handoff.assigner_name else [],
+                allowed_user_ids=[handoff.assigner_id] if handoff.assigner_id else [],
+                allowed_roles=["owner", "admin", "lead", "operator"],
+            )
+
+            confirm_card = (
+                f"🤔 **TaskFlow: Did you mean to assign this? (Confirmation Needed)**\n\n"
+                f"• **Task:** {handoff.task_title}\n"
+                f"• **Suggested Assignee:** @{handoff.assignee_name}\n"
+                f"• **Assigned by:** @{handoff.assigner_name}\n"
+                f"• **Due Date:** {handoff.deadline or 'Not specified'}\n"
+                f"• **Confidence:** `MEDIUM` (Implicit or ambiguous request)\n"
+                f"• **Approval ID:** `{approval.approval_id}`\n\n"
+                f"📋 **Proposed Action Plan Checklist:**\n"
+                f"{worker_result.artifact_content}\n\n"
+                f"👉 **To confirm assignment & notify @{handoff.assignee_name}:**\n"
+                f"`@taskflow-worker confirm {approval.approval_id}` (or `@taskflow-worker approve {approval.approval_id}`)\n\n"
+                f"👉 **To dismiss:**\n"
+                f"`@taskflow-worker dismiss {approval.approval_id}`\n\n"
+                f"*(Confirmation locked to assigner @{handoff.assigner_name} or room roles)*"
+            )
+
+            target_users = [handoff.assigner_name] if handoff.assigner_name else []
+            await asyncio.to_thread(
+                client.send_targeted_message,
+                body=confirm_card,
+                target_names=target_users,
+                thread_id=handoff.thread_id,
+                room_id=handoff.room_id
+            )
+            logger.info("🤔 [Worker] Medium-confidence task '%s' held for assigner confirmation (%s). Assignee @%s not paged.",
+                        handoff.task_title, approval.approval_id, handoff.assignee_name)
+            return
+
+        # 1. Register task natively in Switch Room Task Store (High Confidence path)
         room_task = default_room_task_store.create_task(
             title=handoff.task_title,
             room_id=handoff.room_id or client.room_id or "",

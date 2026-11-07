@@ -233,8 +233,10 @@ class InteractionDispatcher:
                     "approval": appr
                 }
 
-            # Register native task in Switch Room Task Store for tracking
-            if action_type in ("accept", "confirm") or getattr(appr, "execution_type", None) != "AUTO_EXECUTE":
+            # Register native task in Switch Room Task Store for tracking human tasks
+            is_human_task = action_type in ("accept", "confirm") or getattr(appr, "action_type", None) in ("ASSIGNMENT", "HUMAN_TODO")
+
+            if is_human_task:
                 try:
                     room_task = default_room_task_store.create_task(
                         title=appr.action_summary,
@@ -264,7 +266,7 @@ class InteractionDispatcher:
                     logger.warning("Failed updating room document on approval: %s", e)
 
             # Execute side effect: post to room/channel if AUTO_EXECUTE
-            if auto_post_on_approval and action_type == "approve" and self.switch_client and hasattr(self.switch_client, "post_message"):
+            if auto_post_on_approval and action_type == "approve" and getattr(appr, "action_type", "AUTO_EXECUTE") == "AUTO_EXECUTE" and self.switch_client and hasattr(self.switch_client, "post_message"):
                 try:
                     doc_line = f"• **Room Document:** `{appr.switch_doc_id}` [Published]\n\n" if appr.switch_doc_id else ""
                     post_body = (
@@ -282,8 +284,8 @@ class InteractionDispatcher:
                 except Exception as e:
                     logger.error("Failed to post approved artifact: %s", e)
 
-            # Execute side effect: sync to Todoist if configured (with clear 4xx diagnostics)
-            if self.todoist_client and hasattr(self.todoist_client, "create_task"):
+            # Execute side effect: sync to Todoist if configured (with clear 4xx diagnostics) for human tasks
+            if is_human_task and self.todoist_client and hasattr(self.todoist_client, "create_task"):
                 try:
                     todo_res = self.todoist_client.create_task(
                         content=f"[{appr.assignee_name or 'Team'}] {appr.action_summary}",
@@ -304,15 +306,15 @@ class InteractionDispatcher:
                         default_room_task_store._save()
                     logger.warning("Todoist sync failed on approval: %s", e)
 
-            if not todoist_url and hasattr(self.todoist_client, "last_error") and self.todoist_client.last_error:
+            if is_human_task and not todoist_url and hasattr(self.todoist_client, "last_error") and self.todoist_client.last_error:
                 todoist_error = self.todoist_client.last_error
                 if room_task:
                     room_task.todoist_error = todoist_error
                     default_room_task_store._save()
 
-            # Execute side effect: When CONFIRM (medium confidence path confirmed),
+            # Execute side effect: When CONFIRM / human assignment confirmed,
             # forward the preserved worker checklist to the assignee natively or via Slack DM
-            if action_type == "confirm":
+            if is_human_task:
                 # 1. On Switch: Native targeted message with the full worker checklist
                 if self.switch_client and hasattr(self.switch_client, "send_targeted_message") and appr.assignee_name:
                     try:
