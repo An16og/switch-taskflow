@@ -113,6 +113,60 @@ class TestTaskPipeline(unittest.TestCase):
         self.assertIn("Task added to Todoist!", text)
         self.assertIn("Fix staging auth token bug", text)
 
+    def test_switch_client_slack_bridge_detection(self):
+        """Verify SwitchAgentClient correctly detects whether Slack is the Switch-connected app."""
+        from unittest.mock import patch, MagicMock
+        from switch_client import SwitchAgentClient
+
+        client = SwitchAgentClient(
+            server_url="http://mock-switch:52422",
+            agent_id="test_agent",
+            api_key="test_key",
+            room_id="room_123"
+        )
+
+        # Case 1: Room has an active Slack bridge managed by Switch
+        mock_slack_resp = MagicMock()
+        mock_slack_resp.status_code = 200
+        mock_slack_resp.json.return_value = {
+            "result": {
+                "bridge_id": "br_slack_001",
+                "bridge_display_name": "Slack Workspace",
+                "external_channel_id": "C012345678"
+            }
+        }
+        with patch("requests.post", return_value=mock_slack_resp):
+            info = client.get_room_bridge_info("room_123")
+            self.assertTrue(info["connected"])
+            self.assertTrue(info["is_slack"])
+            self.assertEqual(info["bridge_name"], "Slack Workspace")
+            self.assertEqual(info["external_channel_id"], "C012345678")
+            self.assertTrue(client.is_slack_connected("room_123"))
+
+        # Case 2: Room is in pure Switch workroom mode (no external bridge)
+        mock_native_resp = MagicMock()
+        mock_native_resp.status_code = 200
+        mock_native_resp.json.return_value = {
+            "result": {
+                "bridge_id": None,
+                "bridge_display_name": None,
+                "external_channel_id": None
+            }
+        }
+        with patch("requests.post", return_value=mock_native_resp):
+            info = client.get_room_bridge_info("room_123")
+            self.assertFalse(info["connected"])
+            self.assertFalse(info["is_slack"])
+            self.assertFalse(client.is_slack_connected("room_123"))
+
+    def test_switch_owns_slack_connection_no_parallel_bolt(self):
+        """Ensure TaskFlow config and bot do not mandate or initialize a parallel Slack Bolt app."""
+        import config
+        # Verify that SLACK_BOT_TOKEN is not a required env variable in check_env()
+        self.assertTrue(config.check_env())
+        # Verify that config does not mandate a parallel Bolt socket mode
+        self.assertFalse(hasattr(config, "SLACK_APP_TOKEN"))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -7,12 +7,19 @@ env_path = Path(__file__).parent / ".env"
 load_dotenv(dotenv_path=env_path)
 
 # ==============================================================================
-# Switch Server Configuration
+# Switch Server & Collaboration Bridge Configuration
 # ==============================================================================
-# NOTE: Chat platforms (Slack, Teams, Discord, Mattermost) are connected directly
-# through Switch Console under "Messaging Apps".
-# TaskFlow does NOT open a separate Slack Socket Mode connection because running
-# two Socket Mode apps on the same workspace will fight for events.
+# CRITICAL ARCHITECTURAL GUARANTEE:
+# Chat platforms (Slack, Teams, Discord, Mattermost) are connected directly through
+# Switch Console / Switch Core under "Messaging Apps" / Bridges.
+# Switch is the authoritative owner of the Slack connection.
+#
+# TaskFlow NEVER opens a parallel Slack Bolt app or standalone Socket Mode listener.
+# Running a parallel Bolt app on the same Slack workspace will collide and fight
+# for events. Slack events are enabled ONLY if Slack is the Switch-connected app,
+# routed cleanly over Switch's native WebSocket event stream.
+# (Configuring standalone Event Subscriptions like 'message.channels' is the wrong
+# fix when Switch owns the Slack connection).
 # ==============================================================================
 SWITCH_SERVER_URL = os.getenv("SWITCH_SERVER_URL", "http://127.0.0.1:52422").strip().rstrip("/")
 SWITCH_WS_URL = os.getenv("SWITCH_WS_URL", SWITCH_SERVER_URL.replace("http://", "ws://").replace("https://", "wss://")).strip().rstrip("/")

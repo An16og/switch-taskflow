@@ -264,6 +264,10 @@ When an attacker attempts prompt injection or secret exfiltration, Switch Trust 
 4. Map your channel (e.g. `#engineering-triage`) to Switch Room `taskflow-operations`.
 5. Messages from Slack/Mattermost are now transparently routed into the Switch Workroom event stream!
 
+> [!IMPORTANT]
+> **Switch Owns the Slack Connection (No Parallel Bolt App):**  
+> TaskFlow enables Slack events **strictly because Switch is the connected app**, not through a parallel Slack Bolt app or direct Socket Mode client. Configuring standalone Slack app Event Subscriptions (such as subscribing directly to `message.channels`) is the wrong fix when Switch owns the Slack connection; Switch Core's bridge handles all channel ingestion and forwards clean room events over the WebSocket bus.
+
 ---
 
 ## 📂 Project Structure

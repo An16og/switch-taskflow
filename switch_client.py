@@ -487,3 +487,55 @@ class SwitchAgentClient:
             logger.debug("Failed querying room roles for %s: %s", user_name or user_id, e)
 
         return roles
+
+    def get_room_bridge_info(self, room_id: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Inspects Switch room metadata to determine if an external collaboration
+        bridge (such as Slack or Mattermost) is connected to this room.
+        
+        Switch owns the Slack connection; TaskFlow never runs a parallel Bolt app.
+        """
+        target_room = room_id or self.room_id
+        if not target_room or not self.agent_id:
+            return {
+                "connected": False,
+                "is_slack": False,
+                "bridge_id": None,
+                "bridge_name": None,
+                "external_channel_id": None,
+            }
+
+        try:
+            resp = requests.post(
+                f"{self.server_url}/agents/{self.agent_id}/ops/get_room_detail",
+                headers=self.auth_headers,
+                json={"room_id": target_room},
+                timeout=5,
+            )
+            if resp.status_code == 200:
+                result = resp.json().get("result", {})
+                bridge_id = result.get("bridge_id")
+                bridge_name = result.get("bridge_display_name")
+                channel_id = result.get("external_channel_id")
+                is_slack = bool(bridge_name and "slack" in bridge_name.lower())
+                return {
+                    "connected": bool(bridge_id or bridge_name),
+                    "is_slack": is_slack,
+                    "bridge_id": bridge_id,
+                    "bridge_name": bridge_name,
+                    "external_channel_id": channel_id,
+                }
+        except Exception as e:
+            logger.debug("Failed querying room bridge info for %s: %s", target_room, e)
+
+        return {
+            "connected": False,
+            "is_slack": False,
+            "bridge_id": None,
+            "bridge_name": None,
+            "external_channel_id": None,
+        }
+
+    def is_slack_connected(self, room_id: Optional[str] = None) -> bool:
+        """Returns True if Switch has an active Slack collaboration bridge connected to this room."""
+        return self.get_room_bridge_info(room_id).get("is_slack", False)

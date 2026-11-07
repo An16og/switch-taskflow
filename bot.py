@@ -107,6 +107,10 @@ async def handle_triage_message(client: SwitchAgentClient, payload: Dict[str, An
 
     logger.info("👂 [Triage] Room message from %s (addressed=%s): %s", sender_name, addressed, body[:60])
 
+    # Determine triage activation
+    is_addressed_to_us = addressed or any(tag in body.lower() for tag in ("@taskflow", "@taskflow-triage"))
+    is_ambient_hit = should_ambient_triage(body)
+
     # Security Guardrail: Check for prompt injection or rule override attempts
     is_inj, inj_reason = detect_prompt_injection(body)
     if is_inj:
@@ -133,10 +137,6 @@ async def handle_triage_message(client: SwitchAgentClient, payload: Dict[str, An
         ts=str(payload.get("timestamp") or time.time()),
     )
     room_buffers[room_id].append(msg_obj)
-
-    # Determine triage activation
-    is_addressed_to_us = addressed or any(tag in body.lower() for tag in ("@taskflow", "@taskflow-triage"))
-    is_ambient_hit = should_ambient_triage(body)
 
     if not is_addressed_to_us and not is_ambient_hit:
         logger.debug("[Triage] Ignored message (ambient triage policy not met).")
@@ -498,6 +498,31 @@ async def main():
             worker.set_agent_addressing(SWITCH_TRIAGE_AGENT_ID, "anyone")
         except Exception as e:
             logger.warning("Could not set addressing on startup: %s", e)
+
+        # Inspect if Switch has an active Slack collaboration bridge connected
+        active_room = SWITCH_ROOM_ID or triage.room_id
+        try:
+            bridge_info = triage.get_room_bridge_info(active_room)
+            if bridge_info.get("is_slack"):
+                logger.info(
+                    "🔗 [Switch Bridge] Slack collaboration bridge active for room '%s' (bridge: %s, external channel: %s). Slack events enabled via Switch.",
+                    active_room,
+                    bridge_info.get("bridge_name"),
+                    bridge_info.get("external_channel_id"),
+                )
+            elif bridge_info.get("connected"):
+                logger.info(
+                    "🔗 [Switch Bridge] External bridge '%s' active for room '%s'.",
+                    bridge_info.get("bridge_name"),
+                    active_room,
+                )
+            else:
+                logger.info(
+                    "ℹ️ [Switch Native] Pure Switch Workroom mode active (Slack bridge not attached to room '%s'). Zero Slack tokens required; TaskFlow runs natively without a parallel Bolt app.",
+                    active_room,
+                )
+        except Exception as e:
+            logger.debug("Could not resolve bridge info on startup: %s", e)
 
         await asyncio.gather(
             triage.connect_and_listen(),
