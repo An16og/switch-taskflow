@@ -137,10 +137,10 @@ Open **Switch Console** in your browser (`http://localhost:52422`) or your Switc
 1. Open the **TaskFlow Operations** room.
 2. **Test Autonomous Knowledge Work (`AUTO_EXECUTE`):**
    > Type: `@taskflow-triage please draft release notes for v1.3 with dark mode and security patches`  
-   > ⚡ **Result:** `taskflow-triage` hands off to `taskflow-worker` via targeted room message $\rightarrow$ `taskflow-worker` autonomously drafts and posts the complete formatted Markdown deliverable to the room!
+   > ⚡ **Result:** `taskflow-triage` hands off to `taskflow-worker` via targeted room message $\rightarrow$ `taskflow-worker` autonomously drafts the deliverable grounded in real git history, saves it as a Switch Room Document, and surfaces a **Pending Approval** proposal card $\rightarrow$ Type `@taskflow-worker approve <approval_id>` (or click Approve) to validate and publish!
 3. **Test Human Action Scaffolding (`HUMAN_TODO`):**
    > Type: `Todo: Need someone to audit the database connection pool settings before tomorrow`  
-   > 📋 **Result:** `taskflow-triage` ambiently catches the todo $\rightarrow$ `taskflow-worker` scaffolds a 3-step technical action checklist with due date and posts the delivery receipt!
+   > 📋 **Result:** `taskflow-triage` ambiently catches the todo $\rightarrow$ recognizes it requires human credentials $\rightarrow$ `taskflow-worker` scaffolds a 3-step technical action checklist with due date and posts the delivery receipt!
 
 ---
 
@@ -216,6 +216,23 @@ The receipt is posted to the room, so the whole team sees the unclaimed task. Cl
 ### Compact handoff
 
 The Triage → Worker handoff no longer dumps the structured payload into chat. The payload is stored in the TaskFlow handoff store and the room only sees a short `@taskflow-worker On it. [handoff]` line. The Worker claims the queued handoff, executes it, and posts the normal deliverable card.
+
+### Human-in-the-Loop (HITL) Validation & Review Gate
+
+When an engineering ask is routine knowledge work (`AUTO_EXECUTE`—such as *"do the documentation"* or *"draft release notes"*), TaskFlow does **not** recklessly broadcast unverified drafts into production channels:
+
+1. **Autonomous Execution:** `taskflow-worker` writes the complete deliverable, grounded in verified local git commits, changelogs, and repo files.
+2. **Room Document Persistence:** The drafted deliverable is persisted server-side as a draft **Switch Room Document** (`sw_doc_...`), keeping heavy content out of conversational scrollback.
+3. **Pending Approval Proposal Card:** The worker posts an interactive proposal card surfacing the approval ID, preview snippet, and locked authorization targets:
+   - **Interactive Buttons (Slack / Block Kit):** `[ 🚀 Approve & Post ]`, `[ 📋 Save as Room Doc ]`, `[ ❌ Dismiss ]`
+   - **Native Chat Commands (Switch Workroom & Chat Bridges):**
+     ```text
+     @taskflow-worker approve appr_ab12cd34
+     @taskflow-worker save appr_ab12cd34
+     @taskflow-worker dismiss appr_ab12cd34
+     ```
+4. **Role-Based Access Control (RBAC):** Approvals are cryptographically locked to the requester, designated assignee, or Switch room role holders (`owner`, `admin`, `lead`, `operator`). Bystanders cannot approve or dismiss critical artifacts.
+5. **Verified Publication:** Once approved, the complete deliverable is published to the room and the Switch Room Document status is promoted to `PUBLISHED`.
 
 ## 💥 What Dies Without Switch?
 
