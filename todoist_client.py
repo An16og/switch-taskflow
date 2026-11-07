@@ -28,7 +28,7 @@ class TodoistClient:
         - due_string: Natural language date or ISO timestamp (e.g. 'Tomorrow 5pm')
         """
         if not self.api_token:
-            logger.error("Todoist API token is missing.")
+            logger.debug("Todoist API token is not configured; skipping external Todoist task sync.")
             return None
 
         payload = {

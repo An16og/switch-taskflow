@@ -404,13 +404,18 @@ async def handle_worker_message(client: SwitchAgentClient, payload: Dict[str, An
             due_string=handoff.deadline,
         )
 
-        task_url = todoist_res.get("url", "https://todoist.com/app")
+        task_url = (todoist_res or {}).get("url") if isinstance(todoist_res, dict) else None
+        if task_url:
+            tracker_line = f"**Todoist Task:** [Open in Todoist]({task_url})\n\n"
+        else:
+            tracker_line = f"**Status:** Tracked natively in Switch Workroom\n\n"
+
         receipt_text = (
-            f"🎯 **Task Handed Off & Tracked in Todoist**\n\n"
+            f"🎯 **Task Handed Off & Tracked**\n\n"
             f"**Task:** {handoff.task_title}\n"
             f"**Assignee:** @{handoff.assignee_name}\n"
             f"**Due Date:** {handoff.deadline or 'Not specified'}\n"
-            f"**Todoist Task:** [Open in Todoist]({task_url})\n\n"
+            f"{tracker_line}"
             f"📋 **Action Checklist:**\n{worker_result.artifact_content}\n\n"
             f"*(Scaffolded by @taskflow-worker via Switch targeted room message)*"
         )

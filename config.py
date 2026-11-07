@@ -54,7 +54,7 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "").strip()
 
-# Task Tracker
+# Task Tracker (Optional - Switch room tasks & documents are primary)
 TODOIST_API_TOKEN = os.getenv("TODOIST_API_TOKEN", "").strip()
 
 def check_env():
@@ -62,8 +62,8 @@ def check_env():
     missing = []
     if not GEMINI_API_KEY and not OPENAI_API_KEY and not ANTHROPIC_API_KEY:
         missing.append("At least one LLM key (GEMINI_API_KEY, OPENAI_API_KEY, ANTHROPIC_API_KEY)")
-    if not TODOIST_API_TOKEN:
-        missing.append("TODOIST_API_TOKEN")
+    if not SWITCH_SERVER_URL:
+        missing.append("SWITCH_SERVER_URL")
 
     if missing:
         print("[WARNING] Missing recommended environment variables:", file=sys.stderr)
