@@ -4,6 +4,7 @@
 
 [![Switch AI](https://img.shields.io/badge/Native%20Protocol-Switch%20AI%20Core-6366F1)](https://switchagents.ai)
 [![Python 3.12](https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white)](https://python.org)
+[![CI](https://github.com/An16og/switch-taskflow/actions/workflows/ci.yml/badge.svg)](https://github.com/An16og/switch-taskflow/actions/workflows/ci.yml)
 [![WebSocket](https://img.shields.io/badge/Transport-Native%20WebSocket%20%2B%20Ops-00C7B7)](https://switchagents.ai)
 [![Switch Trust](https://img.shields.io/badge/Guardrails-Switch%20Trust%20SDK-10B981)](https://switchagents.ai)
 [![Gemini](https://img.shields.io/badge/LLM-Gemini%203.5%20Flash-4285F4?logo=google&logoColor=white)](https://aistudio.google.com)
@@ -158,11 +159,11 @@ python simulate_switch_interaction.py
 - **Scenario 2 (`HUMAN_TODO`):** Simulates Sarah posting an ambient database todo $\rightarrow$ Triage detects action item $\rightarrow$ Worker scaffolds 3-step action checklist $\rightarrow$ Delivers targeted receipt.
 - **Scenario 3 (Sliding Window Deduplication):** Simulates follow-up banter in the sliding context window $\rightarrow$ Semantic deduplicator screens tokens and suppresses duplicate task firing.
 
-### Run the Complete Test Suite (115/115 Passing):
+### Run the Complete Test Suite (118/118 Passing):
 ```bash
 python -m unittest discover
 ```
-*Executes all 115 unit and integration tests covering per-room LLM cost DoS rate limiting, LLM retries/backoff, Claude structured JSON, model-id startup probes, SQLite dedup & room buffer persistence across restarts, pending approvals, prompt injection defense, secret leakage DLP gates, channel backlog triage jobs, Todoist idempotency & 429 retry, grounded context resolution, WebSocket heartbeat liveness, and multi-agent coordination in under 4 seconds!*
+*Executes all 118 unit and integration tests covering per-room LLM cost DoS rate limiting, LLM retries/backoff, Claude structured JSON, model-id startup probes, deterministic multi-agent pipeline execution (AUTO_EXECUTE & HUMAN_TODO), SQLite dedup & room buffer persistence across restarts, pending approvals, prompt injection defense, secret leakage DLP gates, channel backlog triage jobs, Todoist idempotency & 429 retry, grounded context resolution, WebSocket heartbeat liveness, and multi-agent coordination in under 4 seconds!*
 
 ---
 
@@ -297,6 +298,9 @@ switch-taskflow/
 ├── bot.py                            # Multi-Agent Daemon (Runs taskflow-triage & taskflow-worker)
 ├── config.py                         # Environment and multi-agent configuration
 ├── models.py                         # Pydantic schemas (TaskTriageResult, TaskHandoffMessage, etc.)
+├── .github/
+│   └── workflows/
+│       └── ci.yml                     # GitHub Actions CI matrix (Python 3.10, 3.11, 3.12)
 ├── llm_gateway.py                    # Switch Trust Wrapped Multi-Provider LLM Gateway
 ├── todoist_client.py                 # Todoist REST API v1 Client with auto-retry & 4xx diagnostics
 ├── approvals.py                      # Persistent server-side pending approval store (<100 char buttons)
@@ -308,7 +312,7 @@ switch-taskflow/
 ├── test_deduplication.py             # Task deduplication & sliding window test suite
 ├── test_trust_guardrails.py          # Switch Trust guardrails test suite
 ├── test_approvals.py                 # Pending approvals & RBAC test suite
-├── test_multi_agent.py               # Multi-agent pipeline test suite
+├── test_multi_agent.py               # Deterministic multi-agent pipeline test suite (mocked LLM)
 ├── test_context_resolver.py          # Grounded worker context test suite
 ├── test_user_resolver.py             # Assignee & mention resolver test suite
 ├── test_room_tasks.py                # Room task store & Todoist 4xx diagnostics test suite
@@ -330,5 +334,6 @@ switch-taskflow/
 * **Powered by:** Switch AI Core (`switchagents.ai` / SandboxAQ)
 * **GitHub Repository:** [https://github.com/An16og/switch-taskflow](https://github.com/An16og/switch-taskflow)
 * **Declarative Template:** [`templates/triage-pair.template.yaml`](file:///C:/Users/anujj/OneDrive/Desktop/switch-taskflow/templates/triage-pair.template.yaml) (Switch Version 2 Room Briefing & Scaffolding)
-* **Test Suite:** 115 Unit & Integration Tests Passing (100% Green)
+* **Continuous Integration:** [GitHub Actions CI](https://github.com/An16og/switch-taskflow/actions/workflows/ci.yml)
+* **Test Suite:** 118 Unit & Integration Tests Passing (100% Green)
 * **License:** MIT
